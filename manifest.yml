@@ -1,0 +1,27 @@
+modules:
+  scheduledTrigger:
+    - key: dhl-tracking-scheduler
+      function: main
+      interval: fiveMinute  # every hour
+
+  function:
+    - key: main
+      handler: index.run
+
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - read:servicedesk-request
+    - write:servicedesk-request
+  external:
+    fetch:
+      backend:
+        - 'https://api-eu.dhl.com'   # DHL tracking API host
+
+app:
+  id: ari:cloud:ecosystem::app/86d70337-4eb0-48bc-945b-afc5f32ca0da
+  runtime:
+    name: nodejs22.x
+    memoryMB: 256
+    architecture: arm64
