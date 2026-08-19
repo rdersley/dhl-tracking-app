@@ -134,3 +134,11 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# GitHub safety
+node_modules/
+.env
+.env.*
+!.env.example
+_local-backups/
+.forge/

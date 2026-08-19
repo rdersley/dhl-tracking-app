@@ -12,7 +12,7 @@ import api, { route } from "@forge/api";
    CONFIGURATION
 ------------------------------ */
 
-const DHL_API_KEY = "bfinrwdfLsfreFZriaZrMbAeAGTjp12W";
+const DHL_API_KEY = process.env.DHL_API_KEY;
 const DHL_URL = "https://api-eu.dhl.com/track/shipments";
 
 const PROJECT_KEY = "SD";
@@ -535,6 +535,11 @@ async function handleNonDelivered(issue, analysis) {
 ------------------------------ */
 
 export async function run() {
+  if (!DHL_API_KEY) {
+    console.log("❌ DHL_API_KEY is not configured.");
+    return;
+  }
+
   console.log("==============================================");
   console.log("DHL Tracking App v5");
   console.log("Dynamic workflow transitions enabled");
