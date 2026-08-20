@@ -3,27 +3,27 @@ import api, { route } from "@forge/api";
 import { kvs } from "@forge/kvs";
 
 const CONFIG_KEY = "dhl-tracking-config";
-const OBSERVED_STATUS_KEY = "dhl-observed-statuses";
+const ACTIVITY_LOG_KEY = "dhl-activity-log";
 const DHL_API_KEY_SECRET = "dhl-api-key";
 const DHL_DEFAULT_URL = "https://api-eu.dhl.com/track/shipments";
 
-const STANDARD_DHL_STATUSES = [
-  { key: "delivered", description: "Delivered", terminal: true },
-  { key: "returned", description: "Returned to Sender", terminal: true },
-  { key: "deliveryFailed", description: "Delivery Failed / Attempted", terminal: false },
-  { key: "awaitingCollection", description: "Awaiting Collection", terminal: false },
-  { key: "onHold", description: "On Hold / Exception", terminal: false },
-  { key: "customsDelay", description: "Customs / Clearance Delay", terminal: false },
-  { key: "outForDelivery", description: "Out for Delivery", terminal: false },
-  { key: "inTransit", description: "In Transit", terminal: false },
-  { key: "pickedUp", description: "Picked Up", terminal: false },
-  { key: "unknown", description: "Unknown / Other", terminal: false }
+const STANDARD_DHL_CATEGORIES = [
+  { category: "pickedUp", label: "Picked Up", terminal: false },
+  { category: "inTransit", label: "In Transit", terminal: false },
+  { category: "outForDelivery", label: "Out for Delivery", terminal: false },
+  { category: "awaitingCollection", label: "Awaiting Collection", terminal: false },
+  { category: "onHold", label: "On Hold / Exception", terminal: false },
+  { category: "customsDelay", label: "Customs / Clearance Delay", terminal: false },
+  { category: "deliveryFailed", label: "Delivery Attempted / Failed", terminal: false },
+  { category: "returnedToSender", label: "Returned to Sender", terminal: true },
+  { category: "delivered", label: "Delivered", terminal: true },
+  { category: "unknown", label: "Unknown / Other", terminal: false }
 ];
 
 const DEFAULT_CONFIG = {
   enabled: true,
   projectKey: "SD",
-  minDaysSinceSent: 3,
+  minDaysSinceSent: 0,
   maxPerRun: 3,
   dhlBaseUrl: DHL_DEFAULT_URL,
   fields: {
@@ -38,92 +38,25 @@ const DEFAULT_CONFIG = {
   clients: [],
   additionalFieldMappings: [],
   statusMappings: [],
-  legacyFallbackEnabled: true,
-  workflowStatuses: {},
-  deliveryStatusValues: {},
   comments: { enabled: true }
 };
 
-function normalise(value) {
-  return String(value ?? "").trim().toLowerCase();
-}
-
-function classifyDhlText(description = "", code = "", status = "") {
-  const text = normalise(`${description} ${code} ${status}`);
-  const has = (...phrases) => phrases.some((phrase) => text.includes(phrase));
-
-  if (has("delivered")) return "delivered";
-  if (has("returned to sender", "return to sender", "returned to shipper", "returned", "rt")) return "returned";
-  if (has("delivery attempted", "delivery attempt", "attempted but no response", "consignee not available", "recipient not home", "delivery failed", "failure")) return "deliveryFailed";
-  if (has("awaiting collection", "collection by the consignee", "ready for collection", "cc")) return "awaitingCollection";
-  if (has("customs", "clearance", "clearance event")) return "customsDelay";
-  if (has("on hold", "shipment is on hold", "exception", "further consignee information needed", "oh")) return "onHold";
-  if (has("out for delivery", "out with courier", "courier for delivery", "scheduled for delivery", "wc")) return "outForDelivery";
-  if (has("picked up", "shipment picked up", "pu")) return "pickedUp";
-  if (has("transit", "processed", "departed", "arrived at", "facility", "forwarded", "sort facility")) return "inTransit";
-  return "unknown";
-}
-
-function standardStatus(categoryKey) {
-  return STANDARD_DHL_STATUSES.find((item) => item.key === categoryKey) || STANDARD_DHL_STATUSES[STANDARD_DHL_STATUSES.length - 1];
-}
-
-function standardiseObservedStatuses(items = []) {
-  const seen = new Map();
-  for (const item of items) {
-    const categoryKey = classifyDhlText(item?.description, item?.code, item?.status);
-    const standard = standardStatus(categoryKey);
-    if (!seen.has(categoryKey)) {
-      seen.set(categoryKey, {
-        key: categoryKey,
-        code: categoryKey,
-        description: standard.description,
-        status: categoryKey,
-        terminal: standard.terminal,
-        examples: []
-      });
-    }
-    const current = seen.get(categoryKey);
-    const example = String(item?.description || "").trim();
-    if (example && !current.examples.includes(example) && current.examples.length < 5) {
-      current.examples.push(example);
-    }
-  }
-  return STANDARD_DHL_STATUSES
-    .filter((standard) => seen.has(standard.key))
-    .map((standard) => seen.get(standard.key));
-}
-
-function standardiseStatusMappings(rows = []) {
-  const byCategory = new Map();
-  for (const row of Array.isArray(rows) ? rows : []) {
-    if (!row) continue;
-    const categoryKey = row.categoryKey || classifyDhlText(row.dhlText, row.dhlCode, "");
-    const standard = standardStatus(categoryKey);
-    const existing = byCategory.get(categoryKey);
-    const next = {
-      ...row,
-      categoryKey,
-      dhlText: standard.description,
-      dhlCode: categoryKey,
-      terminal: row.terminal ?? standard.terminal
+function categoryRows(savedRows = []) {
+  return STANDARD_DHL_CATEGORIES.map((standard) => {
+    const existing = (savedRows || []).find((row) =>
+      row?.category === standard.category ||
+      String(row?.dhlText || "").trim().toLowerCase() === standard.label.toLowerCase()
+    ) || {};
+    return {
+      category: standard.category,
+      label: standard.label,
+      jiraStatus: existing.jiraStatus || "",
+      deliveryStatus: existing.deliveryStatus || "",
+      enabled: existing.enabled !== false,
+      terminal: existing.terminal ?? standard.terminal,
+      commentTemplate: existing.commentTemplate || ""
     };
-    if (!existing) {
-      byCategory.set(categoryKey, next);
-    } else {
-      byCategory.set(categoryKey, {
-        ...existing,
-        jiraStatus: existing.jiraStatus || next.jiraStatus || "",
-        deliveryStatus: existing.deliveryStatus || next.deliveryStatus || "",
-        commentTemplate: existing.commentTemplate || next.commentTemplate || "",
-        terminal: Boolean(existing.terminal || next.terminal),
-        enabled: existing.enabled !== false || next.enabled !== false
-      });
-    }
-  }
-  return STANDARD_DHL_STATUSES
-    .filter((standard) => byCategory.has(standard.key))
-    .map((standard) => byCategory.get(standard.key));
+  });
 }
 
 function mergeConfig(saved = {}) {
@@ -132,11 +65,9 @@ function mergeConfig(saved = {}) {
     ...saved,
     fields: { ...DEFAULT_CONFIG.fields, ...(saved.fields || {}) },
     additionalFieldMappings: Array.isArray(saved.additionalFieldMappings)
-      ? saved.additionalFieldMappings
+      ? saved.additionalFieldMappings.filter((row) => row?.dhlPath || row?.jiraFieldId)
       : [],
-    statusMappings: standardiseStatusMappings(saved.statusMappings || []),
-    workflowStatuses: { ...(saved.workflowStatuses || {}) },
-    deliveryStatusValues: { ...(saved.deliveryStatusValues || {}) },
+    statusMappings: categoryRows(saved.statusMappings),
     comments: { ...DEFAULT_CONFIG.comments, ...(saved.comments || {}) }
   };
 }
@@ -163,46 +94,6 @@ function flattenObject(value, prefix = "", out = {}) {
   return out;
 }
 
-function extractObservedStatuses(shipment) {
-  const found = [];
-  const add = (description, code = "", status = "") => {
-    const text = String(description || "").trim();
-    if (!text) return;
-    found.push({
-      key: `${String(code || "").trim()}|${text.toLowerCase()}`,
-      code: String(code || "").trim(),
-      description: text,
-      status: String(status || "").trim()
-    });
-  };
-
-  add(shipment?.status?.description, shipment?.status?.statusCode, shipment?.status?.status);
-  for (const event of shipment?.events || []) {
-    add(event?.description, event?.statusCode || event?.code, event?.status);
-  }
-  return found;
-}
-
-async function mergeObservedStatuses(items) {
-  const existing = (await kvs.get(OBSERVED_STATUS_KEY)) || [];
-  const byKey = new Map(existing.map((item) => [item.key, item]));
-  const now = new Date().toISOString();
-  for (const item of items) {
-    const previous = byKey.get(item.key) || {};
-    byKey.set(item.key, {
-      ...previous,
-      ...item,
-      firstSeen: previous.firstSeen || now,
-      lastSeen: now
-    });
-  }
-  const merged = [...byKey.values()]
-    .sort((a, b) => a.description.localeCompare(b.description))
-    .slice(0, 500);
-  await kvs.set(OBSERVED_STATUS_KEY, merged);
-  return merged;
-}
-
 async function fetchDhlShipment(config, trackingNumber) {
   const apiKey = await kvs.getSecret(DHL_API_KEY_SECRET);
   if (!apiKey) throw new Error("Save a DHL API key first.");
@@ -224,11 +115,42 @@ async function fetchDhlShipment(config, trackingNumber) {
   return data?.shipments?.[0] || null;
 }
 
+function usefulPreviewFields(shipment) {
+  const flat = flattenObject(shipment);
+  const preferred = [
+    "id",
+    "service",
+    "status.status",
+    "status.statusCode",
+    "status.description",
+    "status.timestamp",
+    "estimatedTimeOfDelivery",
+    "estimatedDeliveryTimeFrame.estimatedFrom",
+    "estimatedDeliveryTimeFrame.estimatedThrough",
+    "origin.address.addressLocality",
+    "origin.address.postalCode",
+    "origin.address.countryCode",
+    "destination.address.addressLocality",
+    "destination.address.postalCode",
+    "destination.address.countryCode",
+    "events.0.timestamp",
+    "events.0.statusCode",
+    "events.0.status",
+    "events.0.description",
+    "events.0.location.address.addressLocality"
+  ];
+
+  return preferred
+    .filter((path) => flat[path] !== undefined)
+    .map((path) => ({ path, value: flat[path] }));
+}
+
 export const handler = makeResolver({
   async getSettings() {
     return {
       config: await getConfig(),
-      hasApiKey: Boolean(await kvs.getSecret(DHL_API_KEY_SECRET))
+      hasApiKey: Boolean(await kvs.getSecret(DHL_API_KEY_SECRET)),
+      standardCategories: STANDARD_DHL_CATEGORIES
     };
   },
 
@@ -243,14 +165,23 @@ export const handler = makeResolver({
     config.minDaysSinceSent = Math.max(0, Number(config.minDaysSinceSent ?? 0));
     config.maxPerRun = Math.min(50, Math.max(1, Number(config.maxPerRun ?? 3)));
     config.additionalFieldMappings = (config.additionalFieldMappings || []).filter(
-      (m) => m && m.jiraFieldId && m.dhlPath
+      (row) => row && row.jiraFieldId && row.dhlPath
     );
-    config.statusMappings = standardiseStatusMappings(config.statusMappings || []);
+    config.statusMappings = categoryRows(config.statusMappings);
 
     await kvs.set(CONFIG_KEY, config);
 
     const apiKey = payload?.dhlApiKey?.trim();
     if (apiKey) await kvs.setSecret(DHL_API_KEY_SECRET, apiKey);
+
+    const log = (await kvs.get(ACTIVITY_LOG_KEY)) || [];
+    log.unshift({
+      timestamp: new Date().toISOString(),
+      level: "info",
+      action: "Settings saved",
+      details: "DHL/Jira mappings were updated by an administrator."
+    });
+    await kvs.set(ACTIVITY_LOG_KEY, log.slice(0, 250));
 
     return {
       ok: true,
@@ -310,28 +241,17 @@ export const handler = makeResolver({
       );
       if (!optionsRes.ok) continue;
       const data = await optionsRes.json();
-      for (const option of data?.values || []) {
-        options.push({ id: option.id, value: option.value, contextId: context.id });
+      for (const item of data?.values || []) {
+        options.push({ id: item.id, value: item.value, contextId: context.id });
       }
     }
 
     const seen = new Set();
-    return options.filter((option) => {
-      const key = option.value;
-      if (seen.has(key)) return false;
-      seen.add(key);
+    return options.filter((item) => {
+      if (seen.has(item.value)) return false;
+      seen.add(item.value);
       return true;
     });
-  },
-
-  async getObservedDhlStatuses() {
-    const raw = (await kvs.get(OBSERVED_STATUS_KEY)) || [];
-    return standardiseObservedStatuses(raw);
-  },
-
-  async clearObservedDhlStatuses() {
-    await kvs.set(OBSERVED_STATUS_KEY, []);
-    return { ok: true };
   },
 
   async inspectDhlTracking({ payload }) {
@@ -341,21 +261,15 @@ export const handler = makeResolver({
     const config = await getConfig();
     const shipment = await fetchDhlShipment(config, trackingNumber);
     if (!shipment) {
-      return { ok: true, shipmentFound: false, fields: [], statuses: [] };
+      return { ok: true, shipmentFound: false, fields: [] };
     }
-
-    const rawObserved = await mergeObservedStatuses(extractObservedStatuses(shipment));
-    const flattened = flattenObject(shipment);
 
     return {
       ok: true,
       shipmentFound: true,
       description:
         shipment?.status?.description || shipment?.events?.[0]?.description || "DHL shipment found.",
-      fields: Object.entries(flattened)
-        .map(([path, value]) => ({ path, value }))
-        .sort((a, b) => a.path.localeCompare(b.path)),
-      statuses: standardiseObservedStatuses(rawObserved)
+      fields: usefulPreviewFields(shipment)
     };
   },
 
@@ -365,14 +279,21 @@ export const handler = makeResolver({
 
     const config = await getConfig();
     const shipment = await fetchDhlShipment(config, trackingNumber);
-    if (!shipment) return { ok: true, shipmentFound: false, description: "Connection successful, but no shipment was returned." };
-
-    await mergeObservedStatuses(extractObservedStatuses(shipment));
     return {
       ok: true,
-      shipmentFound: true,
+      shipmentFound: Boolean(shipment),
       description:
-        shipment?.status?.description || shipment?.events?.[0]?.description || "DHL API connection successful."
+        shipment?.status?.description || shipment?.events?.[0]?.description ||
+        "DHL API connection successful."
     };
+  },
+
+  async getActivityLog() {
+    return (await kvs.get(ACTIVITY_LOG_KEY)) || [];
+  },
+
+  async clearActivityLog() {
+    await kvs.set(ACTIVITY_LOG_KEY, []);
+    return { ok: true };
   }
 });
