@@ -2,6 +2,8 @@ import api, { route } from "@forge/api";
 import { kvs } from "@forge/kvs";
 
 const CONFIG_KEY = "dhl-tracking-config";
+const OBSERVED_STATUS_KEY = "dhl-observed-statuses";
+const TERMINAL_ISSUES_KEY = "dhl-terminal-issues";
 const DHL_API_KEY_SECRET = "dhl-api-key";
 const DHL_DEFAULT_URL = "https://api-eu.dhl.com/track/shipments";
 const MAX_SEARCH_RESULTS = 100;
@@ -11,46 +13,25 @@ const DELAY_MS = 5000;
 const DEFAULT_CONFIG = {
   enabled: true,
   projectKey: "SD",
-  minDaysSinceSent: 3,
+  minDaysSinceSent: 0,
   maxPerRun: 3,
   dhlBaseUrl: DHL_DEFAULT_URL,
   fields: {
-    tracking: "customfield_10417",
-    deliveryStatus: "customfield_11952",
-    deliveryDate: "customfield_10434",
-    signedFor: "customfield_10442",
-    dateSent: "customfield_10433",
-    lastDhlCheck: "customfield_14400",
-    client: "customfield_11658"
+    tracking: "",
+    deliveryStatus: "",
+    deliveryDate: "",
+    signedFor: "",
+    dateSent: "",
+    lastDhlCheck: "",
+    client: ""
   },
-  clients: ["RYR - Ryanair", "RYS - Buzz", "LDA - Lauda "],
-  workflowStatuses: {
-    dispatched: "Dispatched to Customer",
-    outForDelivery: "OUT FOR DELIVERY",
-    awaitingCollection: "DELIVERY AWAITING COLLECTION",
-    onHold: "DELIVERY ON HOLD",
-    failed: "DELIVERY FAILED",
-    resolved: "Resolved"
-  },
-  deliveryStatusValues: {
-    delivered: "Delivered",
-    returnedToSender: "Returned to Sender",
-    deliveryFailed: "Delivery Attempted",
-    awaitingCollection: "Awaiting Collection",
-    onHold: "Exception / On Hold",
-    customsDelay: "Customs Delay",
-    outForDelivery: "Out for Delivery",
-    inTransit: "In Transit",
-    unknown: "Unknown"
-  },
-  comments: {
-    enabled: true,
-    outForDelivery: "📦 DHL update for {issueKey}: shipment {trackingNumber} is out for delivery.\n\nLatest DHL update: {dhlDescription}",
-    awaitingCollection: "📦 DHL update for {issueKey}: shipment {trackingNumber} is awaiting collection.\n\nLatest DHL update: {dhlDescription}",
-    onHold: "⚠️ DHL update for {issueKey}: shipment {trackingNumber} is on hold.\n\nLatest DHL update: {dhlDescription}",
-    failed: "⚠️ DHL update for {issueKey}: delivery requires attention.\n\nLatest DHL update: {dhlDescription}",
-    delivered: "📦 DHL Delivery Update (Automated)\n\nDelivered: {date}\nSigned for by: {signedFor}\nTracking number: {trackingNumber}"
-  }
+  clients: [],
+  additionalFieldMappings: [],
+  statusMappings: [],
+  legacyFallbackEnabled: true,
+  workflowStatuses: {},
+  deliveryStatusValues: {},
+  comments: { enabled: true }
 };
 
 function mergeConfig(saved = {}) {
@@ -58,20 +39,29 @@ function mergeConfig(saved = {}) {
     ...DEFAULT_CONFIG,
     ...saved,
     fields: { ...DEFAULT_CONFIG.fields, ...(saved.fields || {}) },
-    workflowStatuses: { ...DEFAULT_CONFIG.workflowStatuses, ...(saved.workflowStatuses || {}) },
-    deliveryStatusValues: { ...DEFAULT_CONFIG.deliveryStatusValues, ...(saved.deliveryStatusValues || {}) },
+    additionalFieldMappings: Array.isArray(saved.additionalFieldMappings) ? saved.additionalFieldMappings : [],
+    statusMappings: Array.isArray(saved.statusMappings) ? saved.statusMappings : [],
+    workflowStatuses: { ...(saved.workflowStatuses || {}) },
+    deliveryStatusValues: { ...(saved.deliveryStatusValues || {}) },
     comments: { ...DEFAULT_CONFIG.comments, ...(saved.comments || {}) }
   };
 }
 
 async function getConfig() {
-  const saved = await kvs.get(CONFIG_KEY);
-  return mergeConfig(saved || {});
+  return mergeConfig((await kvs.get(CONFIG_KEY)) || {});
 }
 
-function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
-function normalise(value) { return String(value ?? "").trim().toLowerCase(); }
-function jqlString(value) { return `"${String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`; }
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalise(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function jqlString(value) {
+  return `"${String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
 
 function parseJiraDate(raw) {
   if (!raw || typeof raw !== "string") return null;
@@ -90,12 +80,61 @@ function renderTemplate(template, values) {
   return String(template || "").replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key) => String(values[key] ?? ""));
 }
 
+function getPath(obj, path) {
+  if (!path) return undefined;
+  return String(path).split(".").reduce((value, part) => {
+    if (value === null || value === undefined) return undefined;
+    return value[part];
+  }, obj);
+}
+
+function extractObservedStatuses(shipment) {
+  const found = [];
+  const add = (description, code = "", status = "") => {
+    const text = String(description || "").trim();
+    if (!text) return;
+    found.push({
+      key: `${String(code || "").trim()}|${text.toLowerCase()}`,
+      code: String(code || "").trim(),
+      description: text,
+      status: String(status || "").trim()
+    });
+  };
+
+  add(shipment?.status?.description, shipment?.status?.statusCode, shipment?.status?.status);
+  for (const event of shipment?.events || []) {
+    add(event?.description, event?.statusCode || event?.code, event?.status);
+  }
+  return found;
+}
+
+async function recordObservedStatuses(shipment) {
+  const existing = (await kvs.get(OBSERVED_STATUS_KEY)) || [];
+  const byKey = new Map(existing.map((item) => [item.key, item]));
+  const now = new Date().toISOString();
+  for (const item of extractObservedStatuses(shipment)) {
+    const previous = byKey.get(item.key) || {};
+    byKey.set(item.key, {
+      ...previous,
+      ...item,
+      firstSeen: previous.firstSeen || now,
+      lastSeen: now
+    });
+  }
+  await kvs.set(
+    OBSERVED_STATUS_KEY,
+    [...byKey.values()].sort((a, b) => a.description.localeCompare(b.description)).slice(0, 500)
+  );
+}
+
 async function updateIssueFields(issueKey, fields) {
+  if (!fields || Object.keys(fields).length === 0) return true;
   const response = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ fields })
   });
+
   if (!response.ok) {
     console.log(`❌ Failed to update fields on ${issueKey}: ${await response.text()}`);
     return false;
@@ -110,6 +149,7 @@ async function addInternalComment(issueKey, text) {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ public: false, body: text })
   });
+
   if (!response.ok) {
     console.log(`⚠️ Failed to add internal comment to ${issueKey}: ${await response.text()}`);
     return false;
@@ -124,6 +164,7 @@ async function transitionToStatus(issueKey, currentStatusName, targetStatusName,
     method: "GET",
     headers: { Accept: "application/json" }
   });
+
   if (!getResponse.ok) {
     console.log(`❌ Could not retrieve transitions for ${issueKey}: ${await getResponse.text()}`);
     return false;
@@ -134,7 +175,7 @@ async function transitionToStatus(issueKey, currentStatusName, targetStatusName,
   const match = transitions.find((transition) => normalise(transition.to?.name) === normalise(targetStatusName));
 
   if (!match) {
-    console.log(`⚠️ ${issueKey}: no transition to "${targetStatusName}". Available: ${transitions.map((t) => t.to?.name).filter(Boolean).join(", ")}`);
+    console.log(`⚠️ ${issueKey} cannot transition to "${targetStatusName}". Available destinations: ${transitions.map((t) => t.to?.name).filter(Boolean).join(", ")}`);
     return false;
   }
 
@@ -161,12 +202,17 @@ async function getDHL(baseUrl, apiKey, trackingNumber) {
     method: "GET",
     headers: { "DHL-API-Key": apiKey, Accept: "application/json" }
   });
-  if (response.status === 429) return { rateLimited: true, retryAfter: response.headers.get("Retry-After") };
-  if (!response.ok) return { error: true, status: response.status, body: await response.text() };
+
+  if (response.status === 429) {
+    return { rateLimited: true, retryAfter: response.headers.get("Retry-After") };
+  }
+  if (!response.ok) {
+    return { error: true, status: response.status, body: await response.text() };
+  }
   return { ok: true, data: await response.json() };
 }
 
-function determineDhlState(shipment) {
+function determineLegacyState(shipment) {
   const latest = shipment?.events?.[0] || {};
   const currentText = `${normalise(shipment?.status?.description || shipment?.status?.status)} ${normalise(latest.description)}`;
   const includesAny = (phrases) => phrases.some((phrase) => currentText.includes(phrase));
@@ -182,50 +228,122 @@ function determineDhlState(shipment) {
   return "unknown";
 }
 
-function stateToWorkflowStatus(state, config) {
-  switch (state) {
-    case "outForDelivery": return config.workflowStatuses.outForDelivery;
-    case "awaitingCollection": return config.workflowStatuses.awaitingCollection;
-    case "onHold":
-    case "customsDelay": return config.workflowStatuses.onHold;
-    case "deliveryFailed":
-    case "returnedToSender": return config.workflowStatuses.failed;
-    case "delivered": return config.workflowStatuses.resolved;
-    default: return null;
+function legacyMapping(state, config) {
+  const workflow = config.workflowStatuses || {};
+  const delivery = config.deliveryStatusValues || {};
+  const comments = config.comments || {};
+
+  const result = {
+    source: "legacy",
+    jiraStatus: "",
+    deliveryStatus: delivery[state] || delivery.unknown || "",
+    commentTemplate: "",
+    terminal: false,
+    setResolution: ""
+  };
+
+  if (state === "outForDelivery") {
+    result.jiraStatus = workflow.outForDelivery || "";
+    result.commentTemplate = comments.outForDelivery || "";
+  } else if (state === "awaitingCollection") {
+    result.jiraStatus = workflow.awaitingCollection || "";
+    result.commentTemplate = comments.awaitingCollection || "";
+  } else if (state === "onHold" || state === "customsDelay") {
+    result.jiraStatus = workflow.onHold || "";
+    result.commentTemplate = comments.onHold || "";
+  } else if (state === "deliveryFailed" || state === "returnedToSender") {
+    result.jiraStatus = workflow.failed || "";
+    result.commentTemplate = comments.failed || "";
+    result.terminal = true;
+  } else if (state === "delivered") {
+    result.jiraStatus = workflow.resolved || "";
+    result.commentTemplate = comments.delivered || "";
+    result.terminal = true;
+    result.setResolution = "Done";
   }
+
+  return result;
 }
 
-function stateToDeliveryStatus(state, config) {
-  return config.deliveryStatusValues[state] || config.deliveryStatusValues.unknown;
-}
+function resolveConfiguredMapping(shipment, config) {
+  const latest = shipment?.events?.[0] || {};
+  const candidates = [
+    {
+      text: String(latest?.description || "").trim(),
+      code: String(latest?.statusCode || latest?.code || "").trim()
+    },
+    {
+      text: String(shipment?.status?.description || "").trim(),
+      code: String(shipment?.status?.statusCode || "").trim()
+    }
+  ].filter((candidate) => candidate.text);
 
-function stateToCommentKey(state) {
-  if (state === "delivered") return "delivered";
-  if (state === "outForDelivery") return "outForDelivery";
-  if (state === "awaitingCollection") return "awaitingCollection";
-  if (state === "onHold" || state === "customsDelay") return "onHold";
-  if (state === "deliveryFailed" || state === "returnedToSender") return "failed";
+  const mappings = (config.statusMappings || []).filter((mapping) => mapping?.enabled !== false && mapping?.dhlText);
+
+  for (const candidate of candidates) {
+    const match = mappings.find((mapping) => {
+      const textMatches = normalise(candidate.text).includes(normalise(mapping.dhlText));
+      const codeMatches = !String(mapping.dhlCode || "").trim() || normalise(candidate.code) === normalise(mapping.dhlCode);
+      return textMatches && codeMatches;
+    });
+    if (match) {
+      return {
+        ...match,
+        source: "configured",
+        matchedDescription: candidate.text,
+        matchedCode: candidate.code,
+        terminal: Boolean(match.terminal)
+      };
+    }
+  }
+
   return null;
 }
 
-async function searchEligibleIssues(config) {
-  const fields = config.fields;
-  const activeStatuses = [config.workflowStatuses.dispatched, config.workflowStatuses.outForDelivery, config.workflowStatuses.awaitingCollection, config.workflowStatuses.onHold].filter(Boolean);
-  if (!activeStatuses.length) return [];
+async function getTerminalIssueKeys() {
+  return new Set((await kvs.get(TERMINAL_ISSUES_KEY)) || []);
+}
 
-  let jql = `${jqlString(fields.tracking)} IS NOT EMPTY AND project = ${jqlString(config.projectKey)} AND status IN (${activeStatuses.map(jqlString).join(", ")}) `;
+async function markTerminalIssue(issueKey) {
+  const current = await getTerminalIssueKeys();
+  current.add(issueKey);
+  await kvs.set(TERMINAL_ISSUES_KEY, [...current].slice(-5000));
+}
+
+async function searchEligibleIssues(config) {
+  const fields = config.fields || {};
+  if (!fields.tracking) throw new Error("Tracking number field is not configured.");
+
+  let jql = `${jqlString(fields.tracking)} IS NOT EMPTY AND project = ${jqlString(config.projectKey)}`;
 
   if (fields.client && config.clients?.length) {
-    jql += `AND ${jqlString(fields.client)} IN (${config.clients.map(jqlString).join(", ")}) `;
+    jql += ` AND ${jqlString(fields.client)} IN (${config.clients.map(jqlString).join(", ")})`;
   }
 
-  jql += `AND (${jqlString(fields.deliveryStatus)} IS EMPTY OR ${jqlString(fields.deliveryStatus)} != ${jqlString(config.deliveryStatusValues.delivered)})`;
+  const terminalDeliveryValues = (config.statusMappings || [])
+    .filter((mapping) => mapping?.terminal && mapping?.deliveryStatus)
+    .map((mapping) => mapping.deliveryStatus);
 
-  const fieldsParam = [fields.tracking, fields.deliveryStatus, fields.deliveryDate, fields.signedFor, fields.dateSent, fields.lastDhlCheck, fields.client, "status"].filter(Boolean).join(",");
+  if (fields.deliveryStatus && terminalDeliveryValues.length) {
+    jql += ` AND (${jqlString(fields.deliveryStatus)} IS EMPTY OR ${jqlString(fields.deliveryStatus)} NOT IN (${terminalDeliveryValues.map(jqlString).join(", ")}))`;
+  }
+
+  const fieldsParam = [
+    fields.tracking,
+    fields.deliveryStatus,
+    fields.deliveryDate,
+    fields.signedFor,
+    fields.dateSent,
+    fields.lastDhlCheck,
+    fields.client,
+    "status"
+  ].filter(Boolean).join(",");
+
   console.log("📥 JQL:", jql);
 
   const allIssues = [];
   let nextPageToken = null;
+
   do {
     const response = nextPageToken
       ? await api.asApp().requestJira(route`/rest/api/3/search/jql?jql=${jql}&maxResults=${MAX_SEARCH_RESULTS}&fields=${fieldsParam}&nextPageToken=${nextPageToken}`, { method: "GET", headers: { Accept: "application/json" } })
@@ -237,13 +355,14 @@ async function searchEligibleIssues(config) {
     nextPageToken = data.nextPageToken ?? null;
   } while (nextPageToken && allIssues.length < MAX_TOTAL_ISSUES);
 
-  return allIssues.slice(0, MAX_TOTAL_ISSUES);
+  const terminalIssueKeys = await getTerminalIssueKeys();
+  return allIssues.filter((issue) => !terminalIssueKeys.has(issue.key)).slice(0, MAX_TOTAL_ISSUES);
 }
 
 export async function run() {
-  console.log("DHL Tracking App v6 - configurable Marketplace build");
-  const config = await getConfig();
+  console.log("DHL Tracking App v6.1 - dynamic DHL/Jira mapping build");
 
+  const config = await getConfig();
   if (!config.enabled) {
     console.log("ℹ️ DHL Tracking is disabled in app settings.");
     return;
@@ -251,36 +370,40 @@ export async function run() {
 
   const apiKey = await kvs.getSecret(DHL_API_KEY_SECRET);
   if (!apiKey) {
-    console.log("⚠️ DHL API key is not configured. Open Jira Administration > Apps > DHL Tracking > Configure.");
+    console.log("⚠️ DHL API key is not configured. Open DHL Tracking > Configure.");
     return;
   }
 
   let issues;
-  try { issues = await searchEligibleIssues(config); }
-  catch (error) {
+  try {
+    issues = await searchEligibleIssues(config);
+  } catch (error) {
     console.log(`❌ Jira search failed: ${String(error)}`);
     return;
   }
 
-  const cutoff = new Date();
-  cutoff.setUTCDate(cutoff.getUTCDate() - Number(config.minDaysSinceSent || 0));
-
-  issues = issues.filter((issue) => {
-    const sent = parseJiraDate(issue.fields[config.fields.dateSent]);
-    return sent && sent <= cutoff;
-  });
+  if (config.fields?.dateSent && Number(config.minDaysSinceSent || 0) > 0) {
+    const cutoff = new Date();
+    cutoff.setUTCDate(cutoff.getUTCDate() - Number(config.minDaysSinceSent || 0));
+    issues = issues.filter((issue) => {
+      const sent = parseJiraDate(issue.fields[config.fields.dateSent]);
+      return sent && sent <= cutoff;
+    });
+  }
 
   issues.sort((a, b) => {
-    const aLast = a.fields[config.fields.lastDhlCheck];
-    const bLast = b.fields[config.fields.lastDhlCheck];
-    if (!aLast && !bLast) return parseJiraDate(a.fields[config.fields.dateSent]) - parseJiraDate(b.fields[config.fields.dateSent]);
+    const lastField = config.fields?.lastDhlCheck;
+    if (!lastField) return 0;
+    const aLast = a.fields[lastField];
+    const bLast = b.fields[lastField];
+    if (!aLast && !bLast) return 0;
     if (!aLast) return -1;
     if (!bLast) return 1;
     return new Date(aLast) - new Date(bLast);
   });
 
   const toProcess = issues.slice(0, Number(config.maxPerRun || 3));
-  console.log(`⚙️ Processing ${toProcess.length} issue(s): ${toProcess.map((i) => i.key).join(", ")}`);
+  console.log(`⚙️ Processing ${toProcess.length} issue(s): ${toProcess.map((issue) => issue.key).join(", ")}`);
 
   for (const issue of toProcess) {
     const issueKey = issue.key;
@@ -289,6 +412,8 @@ export async function run() {
     if (!trackingNumber) continue;
 
     await sleep(DELAY_MS);
+    console.log(`📦 Checking ${issueKey}: ${trackingNumber}`);
+
     const dhl = await getDHL(config.dhlBaseUrl || DHL_DEFAULT_URL, apiKey, trackingNumber);
 
     if (dhl.rateLimited) {
@@ -301,58 +426,96 @@ export async function run() {
       continue;
     }
 
-    await updateIssueFields(issueKey, { [config.fields.lastDhlCheck]: new Date().toISOString() });
-
     const shipment = dhl.data?.shipments?.[0];
     if (!shipment) {
       console.log(`⚠️ No DHL shipment returned for ${issueKey}`);
       continue;
     }
 
-    const latest = shipment?.events?.[0] || {};
-    const latestDescription = latest.description || shipment?.status?.description || "No DHL description returned";
-    const state = determineDhlState(shipment);
-    const deliveryStatus = stateToDeliveryStatus(state, config);
-    const targetWorkflowStatus = stateToWorkflowStatus(state, config);
+    await recordObservedStatuses(shipment);
 
-    console.log(`📦 ${issueKey}: DHL state=${state}, Jira target=${targetWorkflowStatus || "no workflow change"}`);
+    const latest = shipment?.events?.[0] || {};
+    const latestDescription = latest?.description || shipment?.status?.description || "No DHL description returned";
+    const latestCode = latest?.statusCode || latest?.code || shipment?.status?.statusCode || "";
+
+    let mapping = resolveConfiguredMapping(shipment, config);
+    if (!mapping && config.legacyFallbackEnabled) {
+      const legacyState = determineLegacyState(shipment);
+      mapping = legacyMapping(legacyState, config);
+      mapping.matchedDescription = latestDescription;
+      mapping.matchedCode = latestCode;
+    }
+
+    console.log(`📬 ${issueKey} DHL current event: ${latestDescription}${latestCode ? ` (${latestCode})` : ""}`);
 
     const fieldUpdate = {};
-    if (deliveryStatus && currentDropdownValue(issue.fields[config.fields.deliveryStatus]) !== deliveryStatus) {
-      fieldUpdate[config.fields.deliveryStatus] = { value: deliveryStatus };
+    const nowIso = new Date().toISOString();
+    if (config.fields?.lastDhlCheck) {
+      fieldUpdate[config.fields.lastDhlCheck] = nowIso;
     }
 
     let deliveredDate = "";
     let signedFor = "";
+    let deliveryStatusChanged = false;
 
-    if (state === "delivered") {
-      deliveredDate = latest?.timestamp?.split("T")[0] || "";
-      signedFor = shipment?.proofOfDelivery?.recipientName || latest?.receiverName || latest?.signature || "Unknown";
-      if (deliveredDate) fieldUpdate[config.fields.deliveryDate] = deliveredDate;
-      fieldUpdate[config.fields.signedFor] = signedFor;
+    if (mapping?.deliveryStatus && config.fields?.deliveryStatus) {
+      const currentValue = currentDropdownValue(issue.fields[config.fields.deliveryStatus]);
+      if (currentValue !== mapping.deliveryStatus) {
+        fieldUpdate[config.fields.deliveryStatus] = { value: mapping.deliveryStatus };
+        deliveryStatusChanged = true;
+      }
     }
 
-    if (Object.keys(fieldUpdate).length) await updateIssueFields(issueKey, fieldUpdate);
+    const isDelivered = normalise(latestDescription).includes("delivered") || normalise(shipment?.status?.description).includes("delivered");
+    if (isDelivered) {
+      deliveredDate = String(latest?.timestamp || shipment?.status?.timestamp || "").split("T")[0];
+      signedFor = shipment?.proofOfDelivery?.recipientName || latest?.receiverName || latest?.signature || "Unknown";
+      if (config.fields?.deliveryDate && deliveredDate) fieldUpdate[config.fields.deliveryDate] = deliveredDate;
+      if (config.fields?.signedFor) fieldUpdate[config.fields.signedFor] = signedFor;
+    }
+
+    for (const extra of config.additionalFieldMappings || []) {
+      if (!extra?.jiraFieldId || !extra?.dhlPath) continue;
+      const value = getPath(shipment, extra.dhlPath);
+      if (value === undefined || value === null || typeof value === "object") continue;
+      fieldUpdate[extra.jiraFieldId] = String(value);
+    }
+
+    await updateIssueFields(issueKey, fieldUpdate);
 
     let transitioned = false;
-    if (targetWorkflowStatus) {
-      transitioned = await transitionToStatus(issueKey, currentStatus, targetWorkflowStatus, state === "delivered" ? "Done" : null);
+    if (mapping?.jiraStatus) {
+      transitioned = await transitionToStatus(
+        issueKey,
+        currentStatus,
+        mapping.jiraStatus,
+        mapping.setResolution || null
+      );
     }
 
-    if (transitioned && config.comments?.enabled) {
-      const commentKey = stateToCommentKey(state);
-      const template = commentKey ? config.comments[commentKey] : "";
-      const comment = renderTemplate(template, {
+    const commentTemplate = mapping?.commentTemplate || "";
+    if (config.comments?.enabled && commentTemplate && (transitioned || deliveryStatusChanged)) {
+      const comment = renderTemplate(commentTemplate, {
         issueKey,
         trackingNumber,
-        deliveryStatus,
         dhlDescription: latestDescription,
+        dhlCode: latestCode,
+        deliveryStatus: mapping?.deliveryStatus || "",
         date: deliveredDate,
         signedFor
       });
       await addInternalComment(issueKey, comment);
     }
+
+    if (mapping?.terminal) {
+      await markTerminalIssue(issueKey);
+      console.log(`🛑 ${issueKey} marked terminal; future DHL polling will stop.`);
+    }
+
+    if (!mapping) {
+      console.log(`ℹ️ ${issueKey}: DHL event is currently unmapped. It has been added to the configuration page.`);
+    }
   }
 
-  console.log("✅ DHL Tracking scheduler complete");
+  console.log("✅ DHL Tracking v6.1 scheduler complete");
 }
