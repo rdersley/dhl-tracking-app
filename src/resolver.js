@@ -3,6 +3,7 @@ import api, { route } from "@forge/api";
 import { kvs } from "@forge/kvs";
 
 const CONFIG_KEY = "dhl-tracking-config";
+const OBSERVED_STATUS_KEY = "dhl-observed-statuses";
 const DHL_API_KEY_SECRET = "dhl-api-key";
 const DHL_DEFAULT_URL = "https://api-eu.dhl.com/track/shipments";
 
@@ -13,42 +14,21 @@ const DEFAULT_CONFIG = {
   maxPerRun: 3,
   dhlBaseUrl: DHL_DEFAULT_URL,
   fields: {
-    tracking: "customfield_10417",
-    deliveryStatus: "customfield_11952",
-    deliveryDate: "customfield_10434",
-    signedFor: "customfield_10442",
-    dateSent: "customfield_10433",
-    lastDhlCheck: "customfield_14400",
-    client: "customfield_11658"
+    tracking: "",
+    deliveryStatus: "",
+    deliveryDate: "",
+    signedFor: "",
+    dateSent: "",
+    lastDhlCheck: "",
+    client: ""
   },
-  clients: ["RYR - Ryanair", "RYS - Buzz", "LDA - Lauda "],
-  workflowStatuses: {
-    dispatched: "Dispatched to Customer",
-    outForDelivery: "OUT FOR DELIVERY",
-    awaitingCollection: "DELIVERY AWAITING COLLECTION",
-    onHold: "DELIVERY ON HOLD",
-    failed: "DELIVERY FAILED",
-    resolved: "Resolved"
-  },
-  deliveryStatusValues: {
-    delivered: "Delivered",
-    returnedToSender: "Returned to Sender",
-    deliveryFailed: "Delivery Attempted",
-    awaitingCollection: "Awaiting Collection",
-    onHold: "Exception / On Hold",
-    customsDelay: "Customs Delay",
-    outForDelivery: "Out for Delivery",
-    inTransit: "In Transit",
-    unknown: "Unknown"
-  },
-  comments: {
-    enabled: true,
-    outForDelivery: "📦 DHL update for {issueKey}: shipment {trackingNumber} is out for delivery.\n\nLatest DHL update: {dhlDescription}",
-    awaitingCollection: "📦 DHL update for {issueKey}: shipment {trackingNumber} is awaiting collection.\n\nLatest DHL update: {dhlDescription}",
-    onHold: "⚠️ DHL update for {issueKey}: shipment {trackingNumber} is on hold.\n\nLatest DHL update: {dhlDescription}",
-    failed: "⚠️ DHL update for {issueKey}: delivery requires attention.\n\nLatest DHL update: {dhlDescription}",
-    delivered: "📦 DHL Delivery Update (Automated)\n\nDelivered: {date}\nSigned for by: {signedFor}\nTracking number: {trackingNumber}"
-  }
+  clients: [],
+  additionalFieldMappings: [],
+  statusMappings: [],
+  legacyFallbackEnabled: true,
+  workflowStatuses: {},
+  deliveryStatusValues: {},
+  comments: { enabled: true }
 };
 
 function mergeConfig(saved = {}) {
@@ -56,68 +36,134 @@ function mergeConfig(saved = {}) {
     ...DEFAULT_CONFIG,
     ...saved,
     fields: { ...DEFAULT_CONFIG.fields, ...(saved.fields || {}) },
-    workflowStatuses: {
-      ...DEFAULT_CONFIG.workflowStatuses,
-      ...(saved.workflowStatuses || {})
-    },
-    deliveryStatusValues: {
-      ...DEFAULT_CONFIG.deliveryStatusValues,
-      ...(saved.deliveryStatusValues || {})
-    },
-    comments: {
-      ...DEFAULT_CONFIG.comments,
-      ...(saved.comments || {})
-    }
+    additionalFieldMappings: Array.isArray(saved.additionalFieldMappings)
+      ? saved.additionalFieldMappings
+      : [],
+    statusMappings: Array.isArray(saved.statusMappings)
+      ? saved.statusMappings
+      : [],
+    workflowStatuses: { ...(saved.workflowStatuses || {}) },
+    deliveryStatusValues: { ...(saved.deliveryStatusValues || {}) },
+    comments: { ...DEFAULT_CONFIG.comments, ...(saved.comments || {}) }
   };
 }
 
 async function getConfig() {
-  const saved = await kvs.get(CONFIG_KEY);
-  return mergeConfig(saved || {});
+  return mergeConfig((await kvs.get(CONFIG_KEY)) || {});
+}
+
+function flattenObject(value, prefix = "", out = {}) {
+  if (value === null || value === undefined) return out;
+  if (Array.isArray(value)) {
+    value.slice(0, 10).forEach((item, index) => {
+      flattenObject(item, prefix ? `${prefix}.${index}` : String(index), out);
+    });
+    return out;
+  }
+  if (typeof value === "object") {
+    Object.entries(value).forEach(([key, child]) => {
+      flattenObject(child, prefix ? `${prefix}.${key}` : key, out);
+    });
+    return out;
+  }
+  out[prefix] = String(value);
+  return out;
+}
+
+function extractObservedStatuses(shipment) {
+  const found = [];
+  const add = (description, code = "", status = "") => {
+    const text = String(description || "").trim();
+    if (!text) return;
+    found.push({
+      key: `${String(code || "").trim()}|${text.toLowerCase()}`,
+      code: String(code || "").trim(),
+      description: text,
+      status: String(status || "").trim()
+    });
+  };
+
+  add(shipment?.status?.description, shipment?.status?.statusCode, shipment?.status?.status);
+  for (const event of shipment?.events || []) {
+    add(event?.description, event?.statusCode || event?.code, event?.status);
+  }
+  return found;
+}
+
+async function mergeObservedStatuses(items) {
+  const existing = (await kvs.get(OBSERVED_STATUS_KEY)) || [];
+  const byKey = new Map(existing.map((item) => [item.key, item]));
+  const now = new Date().toISOString();
+  for (const item of items) {
+    const previous = byKey.get(item.key) || {};
+    byKey.set(item.key, {
+      ...previous,
+      ...item,
+      firstSeen: previous.firstSeen || now,
+      lastSeen: now
+    });
+  }
+  const merged = [...byKey.values()]
+    .sort((a, b) => a.description.localeCompare(b.description))
+    .slice(0, 500);
+  await kvs.set(OBSERVED_STATUS_KEY, merged);
+  return merged;
+}
+
+async function fetchDhlShipment(config, trackingNumber) {
+  const apiKey = await kvs.getSecret(DHL_API_KEY_SECRET);
+  if (!apiKey) throw new Error("Save a DHL API key first.");
+
+  const response = await api.fetch(
+    `${config.dhlBaseUrl || DHL_DEFAULT_URL}?trackingNumber=${encodeURIComponent(trackingNumber)}`,
+    {
+      method: "GET",
+      headers: { "DHL-API-Key": apiKey, Accept: "application/json" }
+    }
+  );
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`DHL returned HTTP ${response.status}: ${text.slice(0, 800)}`);
+  }
+
+  const data = JSON.parse(text);
+  return data?.shipments?.[0] || null;
 }
 
 export const handler = makeResolver({
   async getSettings() {
-    const config = await getConfig();
-    const secret = await kvs.getSecret(DHL_API_KEY_SECRET);
-
     return {
-      config,
-      hasApiKey: Boolean(secret)
+      config: await getConfig(),
+      hasApiKey: Boolean(await kvs.getSecret(DHL_API_KEY_SECRET))
     };
   },
 
   async saveSettings({ payload }) {
-    const incoming = payload?.config || {};
     const current = await getConfig();
+    const incoming = payload?.config || {};
     const config = mergeConfig({ ...current, ...incoming });
 
-    if (!config.projectKey?.trim()) {
-      throw new Error("Project key is required.");
-    }
+    if (!config.projectKey?.trim()) throw new Error("Project key is required.");
+    if (!config.fields?.tracking) throw new Error("Select a Jira tracking number field.");
 
-    config.minDaysSinceSent = Math.max(
-      0,
-      Number(config.minDaysSinceSent ?? 0)
+    config.minDaysSinceSent = Math.max(0, Number(config.minDaysSinceSent ?? 0));
+    config.maxPerRun = Math.min(50, Math.max(1, Number(config.maxPerRun ?? 3)));
+    config.additionalFieldMappings = (config.additionalFieldMappings || []).filter(
+      (m) => m && m.jiraFieldId && m.dhlPath
     );
-
-    config.maxPerRun = Math.min(
-      50,
-      Math.max(1, Number(config.maxPerRun ?? 3))
+    config.statusMappings = (config.statusMappings || []).filter(
+      (m) => m && m.dhlText
     );
 
     await kvs.set(CONFIG_KEY, config);
 
     const apiKey = payload?.dhlApiKey?.trim();
-    if (apiKey) {
-      await kvs.setSecret(DHL_API_KEY_SECRET, apiKey);
-    }
+    if (apiKey) await kvs.setSecret(DHL_API_KEY_SECRET, apiKey);
 
     return {
       ok: true,
-      hasApiKey: Boolean(
-        apiKey || (await kvs.getSecret(DHL_API_KEY_SECRET))
-      )
+      hasApiKey: Boolean(apiKey || (await kvs.getSecret(DHL_API_KEY_SECRET)))
     };
   },
 
@@ -131,17 +177,8 @@ export const handler = makeResolver({
       })
     ]);
 
-    if (!fieldsRes.ok) {
-      throw new Error(
-        `Could not read Jira fields: ${await fieldsRes.text()}`
-      );
-    }
-
-    if (!statusesRes.ok) {
-      throw new Error(
-        `Could not read Jira statuses: ${await statusesRes.text()}`
-      );
-    }
+    if (!fieldsRes.ok) throw new Error(`Could not read Jira fields: ${await fieldsRes.text()}`);
+    if (!statusesRes.ok) throw new Error(`Could not read Jira statuses: ${await statusesRes.text()}`);
 
     const fields = await fieldsRes.json();
     const statuses = await statusesRes.json();
@@ -151,72 +188,99 @@ export const handler = makeResolver({
         .map((field) => ({
           id: field.id,
           name: field.name,
-          custom: Boolean(field.custom)
+          custom: Boolean(field.custom),
+          schemaType: field.schema?.type || "",
+          customType: field.schema?.custom || ""
         }))
         .sort((a, b) => a.name.localeCompare(b.name)),
-
       statuses: statuses
-        .map((status) => ({
-          id: status.id,
-          name: status.name
-        }))
+        .map((status) => ({ id: status.id, name: status.name }))
         .sort((a, b) => a.name.localeCompare(b.name))
     };
   },
 
-  async testDhlConnection({ payload }) {
-    const trackingNumber = String(
-      payload?.trackingNumber || ""
-    ).trim();
+  async getFieldOptions({ payload }) {
+    const fieldId = String(payload?.fieldId || "").trim();
+    if (!fieldId?.startsWith("customfield_")) return [];
 
-    if (!trackingNumber) {
-      throw new Error("Enter a tracking number to test.");
+    const contextsRes = await api.asApp().requestJira(
+      route`/rest/api/3/field/${fieldId}/context?maxResults=100`,
+      { headers: { Accept: "application/json" } }
+    );
+    if (!contextsRes.ok) return [];
+
+    const contexts = (await contextsRes.json())?.values || [];
+    const options = [];
+
+    for (const context of contexts) {
+      const optionsRes = await api.asApp().requestJira(
+        route`/rest/api/3/field/${fieldId}/context/${context.id}/option?maxResults=1000`,
+        { headers: { Accept: "application/json" } }
+      );
+      if (!optionsRes.ok) continue;
+      const data = await optionsRes.json();
+      for (const option of data?.values || []) {
+        options.push({ id: option.id, value: option.value, contextId: context.id });
+      }
     }
+
+    const seen = new Set();
+    return options.filter((option) => {
+      const key = option.value;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  },
+
+  async getObservedDhlStatuses() {
+    return (await kvs.get(OBSERVED_STATUS_KEY)) || [];
+  },
+
+  async clearObservedDhlStatuses() {
+    await kvs.set(OBSERVED_STATUS_KEY, []);
+    return { ok: true };
+  },
+
+  async inspectDhlTracking({ payload }) {
+    const trackingNumber = String(payload?.trackingNumber || "").trim();
+    if (!trackingNumber) throw new Error("Enter a tracking number to inspect.");
 
     const config = await getConfig();
-    const apiKey = await kvs.getSecret(DHL_API_KEY_SECRET);
-
-    if (!apiKey) {
-      throw new Error("Save a DHL API key first.");
+    const shipment = await fetchDhlShipment(config, trackingNumber);
+    if (!shipment) {
+      return { ok: true, shipmentFound: false, fields: [], statuses: [] };
     }
 
-    const url =
-      `${config.dhlBaseUrl || DHL_DEFAULT_URL}` +
-      `?trackingNumber=${encodeURIComponent(trackingNumber)}`;
-
-    const response = await api.fetch(url, {
-      method: "GET",
-      headers: {
-        "DHL-API-Key": apiKey,
-        Accept: "application/json"
-      }
-    });
-
-    const text = await response.text();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: response.status,
-        message: text.slice(0, 800)
-      };
-    }
-
-    let data = {};
-    try {
-      data = JSON.parse(text);
-    } catch {}
-
-    const shipment = data?.shipments?.[0];
+    const observed = await mergeObservedStatuses(extractObservedStatuses(shipment));
+    const flattened = flattenObject(shipment);
 
     return {
       ok: true,
-      status: response.status,
-      shipmentFound: Boolean(shipment),
+      shipmentFound: true,
       description:
-        shipment?.status?.description ||
-        shipment?.events?.[0]?.description ||
-        "DHL API connection successful."
+        shipment?.status?.description || shipment?.events?.[0]?.description || "DHL shipment found.",
+      fields: Object.entries(flattened)
+        .map(([path, value]) => ({ path, value }))
+        .sort((a, b) => a.path.localeCompare(b.path)),
+      statuses: observed
+    };
+  },
+
+  async testDhlConnection({ payload }) {
+    const trackingNumber = String(payload?.trackingNumber || "").trim();
+    if (!trackingNumber) throw new Error("Enter a tracking number to test.");
+
+    const config = await getConfig();
+    const shipment = await fetchDhlShipment(config, trackingNumber);
+    if (!shipment) return { ok: true, shipmentFound: false, description: "Connection successful, but no shipment was returned." };
+
+    await mergeObservedStatuses(extractObservedStatuses(shipment));
+    return {
+      ok: true,
+      shipmentFound: true,
+      description:
+        shipment?.status?.description || shipment?.events?.[0]?.description || "DHL API connection successful."
     };
   }
 });
