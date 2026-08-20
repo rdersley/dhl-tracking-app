@@ -29,6 +29,11 @@ function option(value, label = value) {
   return value ? { label, value } : null;
 }
 
+function looksTerminal(text) {
+  const value = String(text || "").toLowerCase();
+  return value.includes("delivered") || value.includes("returned") || value.includes("return to sender") || value.includes("delivery failed");
+}
+
 function App() {
   const [config, setConfig] = useState(null);
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -155,10 +160,10 @@ function App() {
         {
           dhlText: status?.description || "",
           dhlCode: status?.code || "",
-          matchType: "contains",
           jiraStatus: "",
           deliveryStatus: "",
           enabled: true,
+          terminal: looksTerminal(status?.description),
           commentTemplate: ""
         }
       ]
@@ -306,7 +311,7 @@ function App() {
       <Box>
         <Heading as="h2">DHL event → Jira status mapping</Heading>
         <SectionMessage appearance="information">
-          Every DHL event can have its own Jira workflow status, Delivery Status field value, and internal comment. Leave a Jira status blank if that DHL event should not move the ticket.
+          Every DHL event can have its own Jira workflow status, Delivery Status field value, internal comment, and stop-polling rule. Leave a Jira status blank if that DHL event should not move the ticket.
         </SectionMessage>
         <Stack space="space.300">
           {(config.statusMappings || []).map((row, index) => (
@@ -316,6 +321,7 @@ function App() {
               <Label labelFor={`dhl-code-${index}`}>DHL code (optional)</Label>
               <Textfield id={`dhl-code-${index}`} value={row.dhlCode || ""} onChange={(e) => updateStatusMapping(index, { dhlCode: e.target.value })} />
               <Checkbox label="Enabled" isChecked={row.enabled !== false} onChange={() => updateStatusMapping(index, { enabled: row.enabled === false })} />
+              <Checkbox label="Terminal event — stop checking this ticket after it occurs" isChecked={Boolean(row.terminal)} onChange={() => updateStatusMapping(index, { terminal: !row.terminal })} />
               <Label labelFor={`jira-status-${index}`}>Jira workflow status</Label>
               <Select
                 inputId={`jira-status-${index}`}
