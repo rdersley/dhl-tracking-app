@@ -1,12 +1,29 @@
 modules:
   scheduledTrigger:
     - key: dhl-tracking-scheduler
-      function: main
-      interval: fiveMinute  # every hour
+      function: dhl-scheduler
+      interval: fiveMinute
+
+  jira:adminPage:
+    - key: dhl-tracking-configure
+      resource: admin-page
+      render: native
+      resolver:
+        function: admin-resolver
+      title: DHL Tracking
+      useAsConfig: true
 
   function:
-    - key: main
+    - key: dhl-scheduler
       handler: index.run
+      timeoutSeconds: 180
+
+    - key: admin-resolver
+      handler: resolver.handler
+
+resources:
+  - key: admin-page
+    path: src/frontend/admin-page.jsx
 
 permissions:
   scopes:
@@ -14,10 +31,12 @@ permissions:
     - write:jira-work
     - read:servicedesk-request
     - write:servicedesk-request
+    - storage:app
   external:
     fetch:
       backend:
-        - 'https://api-eu.dhl.com'   # DHL tracking API host
+        - address: "https://api-eu.dhl.com"
+          inScopeEUD: false
 
 app:
   id: ari:cloud:ecosystem::app/86d70337-4eb0-48bc-945b-afc5f32ca0da

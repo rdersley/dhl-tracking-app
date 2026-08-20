@@ -1,11 +1,14 @@
 {
-  "name": "scheduled-trigger",
-  "version": "1.1.2",
-  "main": "index.js",
-  "license": "MIT",
+  "name": "dhl-tracking-for-jira",
+  "version": "6.0.0",
   "private": true,
+  "type": "module",
   "dependencies": {
-    "@forge/api": "^6.2.0",
-    "@forge/runtime": "^6.1.1"
+    "@forge/api": "^5.3.0",
+    "@forge/bridge": "^6.3.0",
+    "@forge/kvs": "^2.0.4",
+    "@forge/react": "^12.1.2",
+    "@forge/resolver": "^2.0.0",
+    "react": "^18.2.0"
   }
 }

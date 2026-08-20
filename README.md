@@ -1,38 +1,44 @@
-# Forge Hello World
+# DHL Tracking for Jira — v6 Marketplace Configuration Build
 
-This project contains a Forge app written in Javascript that logs `Hello world!` via a scheduled trigger every hour. 
+This build turns the working scheduler into a configurable Forge app.
 
-See [developer.atlassian.com/platform/forge/](https://developer.atlassian.com/platform/forge) for documentation and tutorials
-explaining Forge.
+## New in v6
 
-## Requirements
+- Jira Configure page using `jira:adminPage`.
+- DHL API key stored in encrypted Forge KVS secret storage.
+- Project and Jira field mapping.
+- Jira workflow status mapping.
+- Delivery Status custom-field value mapping.
+- Configurable internal-comment templates.
+- Dynamic transition lookup — no hard-coded transition IDs.
+- Test DHL connection button.
+- Scheduler reads configuration at runtime.
+- Scheduler timeout raised to 180 seconds.
 
-See [Set up Forge](https://developer.atlassian.com/platform/forge/set-up-forge/) for instructions to get set up.
+## Upgrade steps
 
-## Quick start
+1. Back up the current project folder.
+2. Copy these files over the existing project.
+3. Run:
 
-- Modify your app by editing the `src/index.jsx` file.
+   npm install
+   forge lint
+   forge deploy -e development
 
-- Build and deploy your app by running:
-```
-forge deploy
-```
+4. Because v6 adds storage and an admin configuration page, run:
 
-- Install your app in an Atlassian site by running:
-```
-forge install
-```
+   forge install --upgrade -e development
 
-- Develop your app by running `forge tunnel` to proxy invocations locally:
-```
-forge tunnel
-```
+5. Open Jira Administration > Apps > Manage apps > DHL Tracking > Configure.
+6. Enter the DHL API key.
+7. Verify all field and status mappings.
+8. Enter a known tracking number and click Test DHL connection.
+9. Save settings.
+10. Check scheduler logs with:
 
-### Notes
-- Use the `forge deploy` command when you want to persist code changes.
-- Use the `forge install` command when you want to install the app on a new site.
-- Once the app is installed on a site, the site picks up the new app changes you deploy without needing to rerun the install command.
+   forge logs -e development
 
-## Support
+## Important
 
-See [Get help](https://developer.atlassian.com/platform/forge/get-help/) for how to get help and provide feedback.
+The DHL API key is intentionally not present in source code.
+The scheduler will not process shipments until a key has been saved in the Configure page.
