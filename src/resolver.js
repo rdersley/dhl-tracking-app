@@ -7,6 +7,19 @@ const OBSERVED_STATUS_KEY = "dhl-observed-statuses";
 const DHL_API_KEY_SECRET = "dhl-api-key";
 const DHL_DEFAULT_URL = "https://api-eu.dhl.com/track/shipments";
 
+const STANDARD_DHL_STATUSES = [
+  { key: "delivered", description: "Delivered", terminal: true },
+  { key: "returned", description: "Returned to Sender", terminal: true },
+  { key: "deliveryFailed", description: "Delivery Failed / Attempted", terminal: false },
+  { key: "awaitingCollection", description: "Awaiting Collection", terminal: false },
+  { key: "onHold", description: "On Hold / Exception", terminal: false },
+  { key: "customsDelay", description: "Customs / Clearance Delay", terminal: false },
+  { key: "outForDelivery", description: "Out for Delivery", terminal: false },
+  { key: "inTransit", description: "In Transit", terminal: false },
+  { key: "pickedUp", description: "Picked Up", terminal: false },
+  { key: "unknown", description: "Unknown / Other", terminal: false }
+];
+
 const DEFAULT_CONFIG = {
   enabled: true,
   projectKey: "SD",
@@ -31,6 +44,88 @@ const DEFAULT_CONFIG = {
   comments: { enabled: true }
 };
 
+function normalise(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function classifyDhlText(description = "", code = "", status = "") {
+  const text = normalise(`${description} ${code} ${status}`);
+  const has = (...phrases) => phrases.some((phrase) => text.includes(phrase));
+
+  if (has("delivered")) return "delivered";
+  if (has("returned to sender", "return to sender", "returned to shipper", "returned", "rt")) return "returned";
+  if (has("delivery attempted", "delivery attempt", "attempted but no response", "consignee not available", "recipient not home", "delivery failed", "failure")) return "deliveryFailed";
+  if (has("awaiting collection", "collection by the consignee", "ready for collection", "cc")) return "awaitingCollection";
+  if (has("customs", "clearance", "clearance event")) return "customsDelay";
+  if (has("on hold", "shipment is on hold", "exception", "further consignee information needed", "oh")) return "onHold";
+  if (has("out for delivery", "out with courier", "courier for delivery", "scheduled for delivery", "wc")) return "outForDelivery";
+  if (has("picked up", "shipment picked up", "pu")) return "pickedUp";
+  if (has("transit", "processed", "departed", "arrived at", "facility", "forwarded", "sort facility")) return "inTransit";
+  return "unknown";
+}
+
+function standardStatus(categoryKey) {
+  return STANDARD_DHL_STATUSES.find((item) => item.key === categoryKey) || STANDARD_DHL_STATUSES[STANDARD_DHL_STATUSES.length - 1];
+}
+
+function standardiseObservedStatuses(items = []) {
+  const seen = new Map();
+  for (const item of items) {
+    const categoryKey = classifyDhlText(item?.description, item?.code, item?.status);
+    const standard = standardStatus(categoryKey);
+    if (!seen.has(categoryKey)) {
+      seen.set(categoryKey, {
+        key: categoryKey,
+        code: categoryKey,
+        description: standard.description,
+        status: categoryKey,
+        terminal: standard.terminal,
+        examples: []
+      });
+    }
+    const current = seen.get(categoryKey);
+    const example = String(item?.description || "").trim();
+    if (example && !current.examples.includes(example) && current.examples.length < 5) {
+      current.examples.push(example);
+    }
+  }
+  return STANDARD_DHL_STATUSES
+    .filter((standard) => seen.has(standard.key))
+    .map((standard) => seen.get(standard.key));
+}
+
+function standardiseStatusMappings(rows = []) {
+  const byCategory = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row) continue;
+    const categoryKey = row.categoryKey || classifyDhlText(row.dhlText, row.dhlCode, "");
+    const standard = standardStatus(categoryKey);
+    const existing = byCategory.get(categoryKey);
+    const next = {
+      ...row,
+      categoryKey,
+      dhlText: standard.description,
+      dhlCode: categoryKey,
+      terminal: row.terminal ?? standard.terminal
+    };
+    if (!existing) {
+      byCategory.set(categoryKey, next);
+    } else {
+      byCategory.set(categoryKey, {
+        ...existing,
+        jiraStatus: existing.jiraStatus || next.jiraStatus || "",
+        deliveryStatus: existing.deliveryStatus || next.deliveryStatus || "",
+        commentTemplate: existing.commentTemplate || next.commentTemplate || "",
+        terminal: Boolean(existing.terminal || next.terminal),
+        enabled: existing.enabled !== false || next.enabled !== false
+      });
+    }
+  }
+  return STANDARD_DHL_STATUSES
+    .filter((standard) => byCategory.has(standard.key))
+    .map((standard) => byCategory.get(standard.key));
+}
+
 function mergeConfig(saved = {}) {
   return {
     ...DEFAULT_CONFIG,
@@ -39,9 +134,7 @@ function mergeConfig(saved = {}) {
     additionalFieldMappings: Array.isArray(saved.additionalFieldMappings)
       ? saved.additionalFieldMappings
       : [],
-    statusMappings: Array.isArray(saved.statusMappings)
-      ? saved.statusMappings
-      : [],
+    statusMappings: standardiseStatusMappings(saved.statusMappings || []),
     workflowStatuses: { ...(saved.workflowStatuses || {}) },
     deliveryStatusValues: { ...(saved.deliveryStatusValues || {}) },
     comments: { ...DEFAULT_CONFIG.comments, ...(saved.comments || {}) }
@@ -152,9 +245,7 @@ export const handler = makeResolver({
     config.additionalFieldMappings = (config.additionalFieldMappings || []).filter(
       (m) => m && m.jiraFieldId && m.dhlPath
     );
-    config.statusMappings = (config.statusMappings || []).filter(
-      (m) => m && m.dhlText
-    );
+    config.statusMappings = standardiseStatusMappings(config.statusMappings || []);
 
     await kvs.set(CONFIG_KEY, config);
 
@@ -234,7 +325,8 @@ export const handler = makeResolver({
   },
 
   async getObservedDhlStatuses() {
-    return (await kvs.get(OBSERVED_STATUS_KEY)) || [];
+    const raw = (await kvs.get(OBSERVED_STATUS_KEY)) || [];
+    return standardiseObservedStatuses(raw);
   },
 
   async clearObservedDhlStatuses() {
@@ -252,7 +344,7 @@ export const handler = makeResolver({
       return { ok: true, shipmentFound: false, fields: [], statuses: [] };
     }
 
-    const observed = await mergeObservedStatuses(extractObservedStatuses(shipment));
+    const rawObserved = await mergeObservedStatuses(extractObservedStatuses(shipment));
     const flattened = flattenObject(shipment);
 
     return {
@@ -263,7 +355,7 @@ export const handler = makeResolver({
       fields: Object.entries(flattened)
         .map(([path, value]) => ({ path, value }))
         .sort((a, b) => a.path.localeCompare(b.path)),
-      statuses: observed
+      statuses: standardiseObservedStatuses(rawObserved)
     };
   },
 
