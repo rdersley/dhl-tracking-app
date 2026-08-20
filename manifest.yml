@@ -47,6 +47,8 @@ permissions:
 
 app:
   id: ari:cloud:ecosystem::app/86d70337-4eb0-48bc-945b-afc5f32ca0da
+  licensing:
+    enabled: true
   runtime:
     name: nodejs22.x
     memoryMB: 256
