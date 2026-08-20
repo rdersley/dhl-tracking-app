@@ -5,6 +5,13 @@ modules:
       interval: fiveMinute
 
   jira:adminPage:
+    - key: dhl-tracking-admin
+      resource: admin-page
+      render: native
+      resolver:
+        function: admin-resolver
+      title: DHL Tracking
+
     - key: dhl-tracking-configure
       resource: admin-page
       render: native
