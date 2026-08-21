@@ -2,7 +2,7 @@ modules:
   scheduledTrigger:
     - key: dhl-tracking-scheduler
       function: dhl-scheduler
-      interval: fiveMinute
+      interval: hour
 
   jira:adminPage:
     - key: dhl-tracking-admin
