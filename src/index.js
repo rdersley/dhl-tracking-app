@@ -8,6 +8,7 @@ const DHL_API_KEY_SECRET = "dhl-api-key";
 const DHL_DEFAULT_URL = "https://api-eu.dhl.com/track/shipments";
 const MAX_SEARCH_RESULTS = 100;
 const MAX_TOTAL_ISSUES = 500;
+const MAX_ACTIVITY_LOG_ENTRIES = 100;
 const DELAY_MS = 5000;
 
 const STANDARD_DHL_CATEGORIES = [
@@ -43,6 +44,8 @@ const DEFAULT_CONFIG = {
   statusMappings: [],
   comments: { enabled: true }
 };
+
+let pendingActivity = [];
 
 function categoryRows(savedRows = []) {
   return STANDARD_DHL_CATEGORIES.map((standard) => {
@@ -81,16 +84,22 @@ async function getConfig() {
 }
 
 async function activity(level, action, details = "", issueKey = "") {
+  pendingActivity.unshift({
+    timestamp: new Date().toISOString(),
+    level,
+    action,
+    details,
+    issueKey
+  });
+}
+
+async function flushActivity() {
+  if (pendingActivity.length === 0) return;
   try {
-    const log = (await kvs.get(ACTIVITY_LOG_KEY)) || [];
-    log.unshift({
-      timestamp: new Date().toISOString(),
-      level,
-      action,
-      details,
-      issueKey
-    });
-    await kvs.set(ACTIVITY_LOG_KEY, log.slice(0, 250));
+    const existing = (await kvs.get(ACTIVITY_LOG_KEY)) || [];
+    const combined = [...pendingActivity, ...existing].slice(0, MAX_ACTIVITY_LOG_ENTRIES);
+    await kvs.set(ACTIVITY_LOG_KEY, combined);
+    pendingActivity = [];
   } catch (error) {
     console.log(`Activity log write failed: ${String(error)}`);
   }
@@ -284,6 +293,7 @@ async function getTerminalIssueKeys() {
 
 async function markTerminalIssue(issueKey) {
   const current = await getTerminalIssueKeys();
+  if (current.has(issueKey)) return;
   current.add(issueKey);
   await kvs.set(TERMINAL_ISSUES_KEY, [...current].slice(-5000));
 }
@@ -346,11 +356,11 @@ async function searchEligibleIssues(config) {
 }
 
 export async function run() {
-  console.log("DHL Tracking App v6.2 - standard category mapping build");
+  pendingActivity = [];
+  console.log("DHL Tracking App v6.3 - storage-optimised activity logging");
 
   const config = await getConfig();
   if (!config.enabled) {
-    await activity("info", "Scheduler skipped", "DHL Tracking is disabled in settings.");
     return;
   }
 
@@ -358,6 +368,7 @@ export async function run() {
   if (!apiKey) {
     console.log("⚠️ DHL API key is not configured.");
     await activity("warning", "Scheduler stopped", "DHL API key is not configured.");
+    await flushActivity();
     return;
   }
 
@@ -367,6 +378,7 @@ export async function run() {
   } catch (error) {
     console.log(`❌ Jira search failed: ${String(error)}`);
     await activity("error", "Jira search failed", String(error).slice(0, 500));
+    await flushActivity();
     return;
   }
 
@@ -392,7 +404,6 @@ export async function run() {
 
   const toProcess = issues.slice(0, Number(config.maxPerRun || 3));
   console.log(`⚙️ Processing ${toProcess.length} issue(s): ${toProcess.map((issue) => issue.key).join(", ")}`);
-  await activity("info", "Scheduler started", `${issues.length} eligible; processing ${toProcess.length}.`);
 
   for (const issue of toProcess) {
     const issueKey = issue.key;
@@ -402,7 +413,6 @@ export async function run() {
 
     await sleep(DELAY_MS);
     console.log(`📦 Checking ${issueKey}`);
-    await activity("info", "Checking DHL shipment", "Requesting latest DHL tracking state.", issueKey);
 
     const dhl = await getDHL(config.dhlBaseUrl || DHL_DEFAULT_URL, apiKey, trackingNumber);
 
@@ -435,7 +445,6 @@ export async function run() {
     const categoryLabel = STANDARD_DHL_CATEGORIES.find((item) => item.category === category)?.label || category;
 
     console.log(`📬 ${issueKey}: ${categoryLabel} — ${latestDescription}`);
-    await activity("info", `DHL status: ${categoryLabel}`, latestDescription, issueKey);
 
     const fieldUpdate = {};
     if (config.fields?.lastDhlCheck) {
@@ -478,8 +487,16 @@ export async function run() {
     }
 
     const fieldsUpdated = await updateIssueFields(issueKey, fieldUpdate);
-    if (fieldsUpdated && Object.keys(fieldUpdate).length > 0) {
-      await activity("info", "Jira fields updated", `${Object.keys(fieldUpdate).length} field(s) updated.`, issueKey);
+    const meaningfulFieldCount = Object.keys(fieldUpdate).filter(
+      (fieldId) => fieldId !== config.fields?.lastDhlCheck
+    ).length;
+    if (fieldsUpdated && meaningfulFieldCount > 0) {
+      await activity(
+        "info",
+        "Jira fields updated",
+        `${categoryLabel}: ${meaningfulFieldCount} meaningful field(s) updated. ${latestDescription}`,
+        issueKey
+      );
     }
 
     let transitioned = false;
@@ -516,6 +533,9 @@ export async function run() {
     }
   }
 
-  console.log("✅ DHL Tracking v6.2 scheduler complete");
-  await activity("info", "Scheduler complete", `${toProcess.length} issue(s) processed.`);
+  console.log("✅ DHL Tracking v6.3 scheduler complete");
+  if (pendingActivity.length > 0) {
+    await activity("info", "Scheduler complete", `${toProcess.length} issue(s) checked; notable activity recorded.`);
+  }
+  await flushActivity();
 }
