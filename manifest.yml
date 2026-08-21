@@ -38,7 +38,6 @@ permissions:
   scopes:
     - read:jira-work
     - write:jira-work
-    - read:servicedesk-request
     - write:servicedesk-request
     - storage:app
   external:
