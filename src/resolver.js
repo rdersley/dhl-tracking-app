@@ -6,6 +6,7 @@ const CONFIG_KEY = "dhl-tracking-config";
 const ACTIVITY_LOG_KEY = "dhl-activity-log";
 const DHL_API_KEY_SECRET = "dhl-api-key";
 const DHL_DEFAULT_URL = "https://api-eu.dhl.com/track/shipments";
+const MAX_ACTIVITY_LOG_ENTRIES = 100;
 
 const STANDARD_DHL_CATEGORIES = [
   { category: "pickedUp", label: "Picked Up", terminal: false },
@@ -181,7 +182,7 @@ export const handler = makeResolver({
       action: "Settings saved",
       details: "DHL/Jira mappings were updated by an administrator."
     });
-    await kvs.set(ACTIVITY_LOG_KEY, log.slice(0, 250));
+    await kvs.set(ACTIVITY_LOG_KEY, log.slice(0, MAX_ACTIVITY_LOG_ENTRIES));
 
     return {
       ok: true,
