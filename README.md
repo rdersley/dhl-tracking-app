@@ -1,44 +1,65 @@
-# DHL Tracking for Jira — v6 Marketplace Configuration Build
+# DHL Tracking for Jira
 
-This build turns the working scheduler into a configurable Forge app.
+DHL Tracking for Jira is a configurable Atlassian Forge app for Jira and Jira Service Management that monitors DHL shipments and keeps Jira issues up to date.
 
-## New in v6
+## Marketplace V1 capabilities
 
-- Jira Configure page using `jira:adminPage`.
-- DHL API key stored in encrypted Forge KVS secret storage.
-- Project and Jira field mapping.
-- Jira workflow status mapping.
-- Delivery Status custom-field value mapping.
-- Configurable internal-comment templates.
-- Dynamic transition lookup — no hard-coded transition IDs.
-- Test DHL connection button.
-- Scheduler reads configuration at runtime.
-- Scheduler timeout raised to 180 seconds.
+- Scheduled DHL tracking every five minutes.
+- Administrator configuration page in Jira.
+- DHL API key stored using Forge secret storage.
+- Configurable Jira project and field mappings.
+- Standard DHL shipment categories mapped to Jira workflow statuses.
+- Optional Delivery Status field updates.
+- Optional private/internal Jira Service Management comment templates.
+- Optional mapping of additional DHL response values into Jira fields.
+- Dynamic workflow transition lookup — no hard-coded transition IDs.
+- Configurable terminal states to stop unnecessary tracking after completion.
+- DHL connection test and shipment preview.
+- Administrator Activity Log and system-status panel.
+- Marketplace licensing enabled for the production release.
 
-## Upgrade steps
+## Release scope
 
-1. Back up the current project folder.
-2. Copy these files over the existing project.
-3. Run:
+Marketplace V1 is focused on tracking DHL shipments into Jira. Creating DHL shipments, generating labels, booking pickups and sending dispatch data from Jira to DHL are planned for a later release.
 
-   npm install
-   forge lint
-   forge deploy -e development
+## Data flow
 
-4. Because v6 adds storage and an admin configuration page, run:
+The app sends the configured DHL tracking number to `https://api-eu.dhl.com` to retrieve tracking information. Administrator-selected DHL information can then be written into Jira fields or used to perform configured workflow actions.
 
-   forge install --upgrade -e development
+The V1 tracking release does not use a vendor-hosted remote backend.
 
-5. Open Jira Administration > Apps > Manage apps > DHL Tracking > Configure.
-6. Enter the DHL API key.
-7. Verify all field and status mappings.
-8. Enter a known tracking number and click Test DHL connection.
-9. Save settings.
-10. Check scheduler logs with:
+## Development and test environments
 
-   forge logs -e development
+Use `marketplace-v6-test` for functional testing. The Nuvriqo Jira site is used as the isolated staging test installation.
+
+Use `marketplace-v1-release` only for the final Marketplace release candidate. This branch includes the licensed scheduled-trigger filter so inactive production licenses do not invoke tracking.
+
+## Validation
+
+Before promoting a release:
+
+```powershell
+npm install
+npm audit
+forge lint
+forge eligibility
+```
+
+For staging functional testing:
+
+```powershell
+forge deploy -e staging
+forge install --upgrade -e staging
+```
+
+For final production deployment from the release branch:
+
+```powershell
+forge deploy -e production --approve MAJOR_VERSION_RULE
+```
 
 ## Important
 
-The DHL API key is intentionally not present in source code.
-The scheduler will not process shipments until a key has been saved in the Configure page.
+The DHL API key must never be committed to source control. It is entered by a Jira administrator through the app configuration page and stored using Forge secret storage.
+
+See `MARKETPLACE_SUBMISSION.md` and `MARKETPLACE_CHECKLIST.md` for the release and listing process.
