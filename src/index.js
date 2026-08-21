@@ -145,6 +145,10 @@ function getPath(obj, path) {
   }, obj);
 }
 
+function terminalMarker(issueKey, trackingNumber) {
+  return `${String(issueKey || "").trim()}:${String(trackingNumber || "").trim()}`;
+}
+
 function determineCategory(shipment) {
   const latest = shipment?.events?.[0] || {};
   const text = normalise(
@@ -212,7 +216,7 @@ async function addInternalComment(issueKey, text) {
   return true;
 }
 
-async function transitionToStatus(issueKey, currentStatusName, targetStatusName, resolutionName = null) {
+async function transitionToStatus(issueKey, currentStatusName, targetStatusName) {
   if (!targetStatusName || normalise(currentStatusName) === normalise(targetStatusName)) {
     return false;
   }
@@ -246,15 +250,12 @@ async function transitionToStatus(issueKey, currentStatusName, targetStatusName,
     return false;
   }
 
-  const payload = { transition: { id: match.id } };
-  if (resolutionName) payload.fields = { resolution: { name: resolutionName } };
-
   const response = await api.asApp().requestJira(
     route`/rest/api/3/issue/${issueKey}/transitions`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({ transition: { id: match.id } })
     }
   );
 
@@ -291,10 +292,11 @@ async function getTerminalIssueKeys() {
   return new Set((await kvs.get(TERMINAL_ISSUES_KEY)) || []);
 }
 
-async function markTerminalIssue(issueKey) {
+async function markTerminalIssue(issueKey, trackingNumber) {
+  const marker = terminalMarker(issueKey, trackingNumber);
   const current = await getTerminalIssueKeys();
-  if (current.has(issueKey)) return;
-  current.add(issueKey);
+  if (current.has(marker)) return;
+  current.add(marker);
   await kvs.set(TERMINAL_ISSUES_KEY, [...current].slice(-5000));
 }
 
@@ -351,13 +353,16 @@ async function searchEligibleIssues(config) {
 
   const terminalIssueKeys = await getTerminalIssueKeys();
   return allIssues
-    .filter((issue) => !terminalIssueKeys.has(issue.key))
+    .filter((issue) => {
+      const trackingNumber = issue.fields?.[fields.tracking];
+      return !terminalIssueKeys.has(terminalMarker(issue.key, trackingNumber));
+    })
     .slice(0, MAX_TOTAL_ISSUES);
 }
 
 export async function run() {
   pendingActivity = [];
-  console.log("DHL Tracking App v6.3 - storage-optimised activity logging");
+  console.log("DHL Tracking App v6.4 - Marketplace release candidate");
 
   const config = await getConfig();
   if (!config.enabled) {
@@ -501,12 +506,7 @@ export async function run() {
 
     let transitioned = false;
     if (mapping?.jiraStatus) {
-      transitioned = await transitionToStatus(
-        issueKey,
-        currentStatus,
-        mapping.jiraStatus,
-        category === "delivered" ? "Done" : null
-      );
+      transitioned = await transitionToStatus(issueKey, currentStatus, mapping.jiraStatus);
     }
 
     if (config.comments?.enabled && mapping?.commentTemplate && (transitioned || deliveryStatusChanged)) {
@@ -524,7 +524,7 @@ export async function run() {
     }
 
     if (mapping?.terminal) {
-      await markTerminalIssue(issueKey);
+      await markTerminalIssue(issueKey, trackingNumber);
       await activity("info", "Tracking completed", `${categoryLabel} is configured as a terminal DHL state.`, issueKey);
     }
 
@@ -533,7 +533,7 @@ export async function run() {
     }
   }
 
-  console.log("✅ DHL Tracking v6.3 scheduler complete");
+  console.log("✅ DHL Tracking v6.4 scheduler complete");
   if (pendingActivity.length > 0) {
     await activity("info", "Scheduler complete", `${toProcess.length} issue(s) checked; notable activity recorded.`);
   }
