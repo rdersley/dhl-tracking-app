@@ -3,6 +3,8 @@ modules:
     - key: dhl-tracking-scheduler
       function: dhl-scheduler
       interval: fiveMinute
+      filter:
+        appIsLicensed: true
 
   jira:adminPage:
     - key: dhl-tracking-admin
