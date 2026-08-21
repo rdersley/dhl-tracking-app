@@ -57,7 +57,7 @@ Forge app storage is used for app configuration and a limited administrator acti
 - External egress: `https://api-eu.dhl.com`.
 - Purpose of egress: retrieve DHL tracking information for a tracking number configured on a Jira issue.
 - Jira access: the app reads eligible issues and writes only administrator-configured fields, comments and workflow transitions.
-- Service Management access: used for optional private/internal comments.
+- Service Management access: used only for optional private/internal comments.
 - App storage: configuration and limited operational audit information.
 - Vendor backend: none for V1.
 - Licensing: Forge Marketplace licensing enabled.
@@ -72,14 +72,13 @@ Required to search configured Jira issues, read tracking fields and current work
 ### `write:jira-work`
 Required to update configured Jira fields and perform configured workflow transitions.
 
-### `read:servicedesk-request`
-Required for Jira Service Management request context used by supported JSM functionality.
-
 ### `write:servicedesk-request`
 Required only when an administrator configures private/internal Jira Service Management shipment comments.
 
 ### `storage:app`
 Required for administrator configuration, secure DHL API credential storage and the limited administrator activity log.
+
+The release manifest intentionally does not request `read:servicedesk-request` because V1 does not read JSM request/comment data through the Service Management REST API.
 
 ## Listing links
 
