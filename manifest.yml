@@ -25,7 +25,7 @@ modules:
   function:
     - key: dhl-scheduler
       handler: index.run
-      timeoutSeconds: 180
+      timeoutSeconds: 900
 
     - key: admin-resolver
       handler: resolver.handler
