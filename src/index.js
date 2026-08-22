@@ -9,6 +9,7 @@ const DHL_DEFAULT_URL = "https://api-eu.dhl.com/track/shipments";
 const MAX_SEARCH_RESULTS = 100;
 const MAX_TOTAL_ISSUES = 500;
 const MAX_ACTIVITY_LOG_ENTRIES = 100;
+const MAX_TERMINAL_SHIPMENTS = 1000;
 const DELAY_MS = 5000;
 
 const STANDARD_DHL_CATEGORIES = [
@@ -79,43 +80,37 @@ function mergeConfig(saved = {}) {
   };
 }
 
-async function getConfig() {
-  return mergeConfig((await kvs.get(CONFIG_KEY)) || {});
+async function loadRuntimeState() {
+  const [savedConfig, apiKey] = await Promise.all([
+    kvs.get(CONFIG_KEY),
+    kvs.getSecret(DHL_API_KEY_SECRET)
+  ]);
+  return { config: mergeConfig(savedConfig || {}), apiKey };
 }
 
 async function activity(level, action, details = "", issueKey = "") {
-  pendingActivity.unshift({
-    timestamp: new Date().toISOString(),
-    level,
-    action,
-    details,
-    issueKey
-  });
+  pendingActivity.unshift({ timestamp: new Date().toISOString(), level, action, details, issueKey });
 }
 
 async function flushActivity() {
   if (pendingActivity.length === 0) return;
   try {
     const existing = (await kvs.get(ACTIVITY_LOG_KEY)) || [];
-    const combined = [...pendingActivity, ...existing].slice(0, MAX_ACTIVITY_LOG_ENTRIES);
-    await kvs.set(ACTIVITY_LOG_KEY, combined);
-    pendingActivity = [];
+    await kvs.set(
+      ACTIVITY_LOG_KEY,
+      [...pendingActivity, ...existing].slice(0, MAX_ACTIVITY_LOG_ENTRIES)
+    );
   } catch (error) {
     console.log(`Activity log write failed: ${String(error)}`);
+  } finally {
+    pendingActivity = [];
   }
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function normalise(value) {
-  return String(value ?? "").trim().toLowerCase();
-}
-
-function jqlString(value) {
-  return `"${String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function normalise(value) { return String(value ?? "").trim().toLowerCase(); }
+function jqlString(value) { return `"${String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`; }
+function terminalKey(issueKey, trackingNumber) { return `${issueKey}::${String(trackingNumber || "").trim()}`; }
 
 function parseJiraDate(raw) {
   if (!raw || typeof raw !== "string") return null;
@@ -131,27 +126,18 @@ function currentDropdownValue(value) {
 }
 
 function renderTemplate(template, values) {
-  return String(template || "").replace(
-    /\{([a-zA-Z0-9_]+)\}/g,
-    (_, key) => String(values[key] ?? "")
-  );
+  return String(template || "").replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key) => String(values[key] ?? ""));
 }
 
 function getPath(obj, path) {
   if (!path) return undefined;
-  return String(path).split(".").reduce((value, part) => {
-    if (value === null || value === undefined) return undefined;
-    return value[part];
-  }, obj);
+  return String(path).split(".").reduce((value, part) => value == null ? undefined : value[part], obj);
 }
 
 function determineCategory(shipment) {
   const latest = shipment?.events?.[0] || {};
-  const text = normalise(
-    `${shipment?.status?.description || ""} ${shipment?.status?.status || ""} ${latest?.description || ""} ${latest?.status || ""}`
-  );
+  const text = normalise(`${shipment?.status?.description || ""} ${shipment?.status?.status || ""} ${latest?.description || ""} ${latest?.status || ""}`);
   const has = (...phrases) => phrases.some((phrase) => text.includes(phrase));
-
   if (has("delivered")) return "delivered";
   if (has("return to sender", "returned to sender", "returned to shipper", "shipment returned")) return "returnedToSender";
   if (has("awaiting collection", "collection by the consignee", "ready for collection")) return "awaitingCollection";
@@ -165,210 +151,115 @@ function determineCategory(shipment) {
 }
 
 function configuredMapping(category, config) {
-  return (config.statusMappings || []).find(
-    (row) => row?.category === category && row?.enabled !== false
-  ) || null;
+  return (config.statusMappings || []).find((row) => row?.category === category && row?.enabled !== false) || null;
 }
 
 async function updateIssueFields(issueKey, fields) {
   if (!fields || Object.keys(fields).length === 0) return true;
-
   const response = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ fields })
   });
-
   if (!response.ok) {
     const body = await response.text();
     console.log(`❌ Failed to update fields on ${issueKey}: ${body}`);
     await activity("error", "Jira field update failed", body.slice(0, 400), issueKey);
     return false;
   }
-
   return true;
 }
 
 async function addInternalComment(issueKey, text) {
   if (!text?.trim()) return true;
-
-  const response = await api.asApp().requestJira(
-    route`/rest/servicedeskapi/request/${issueKey}/comment`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ public: false, body: text })
-    }
-  );
-
+  const response = await api.asApp().requestJira(route`/rest/servicedeskapi/request/${issueKey}/comment`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ public: false, body: text })
+  });
   if (!response.ok) {
     const body = await response.text();
-    console.log(`⚠️ Failed to add internal comment to ${issueKey}: ${body}`);
     await activity("warning", "Internal comment failed", body.slice(0, 400), issueKey);
     return false;
   }
-
   await activity("info", "Internal comment added", "DHL status comment added to Jira.", issueKey);
   return true;
 }
 
-async function transitionToStatus(issueKey, currentStatusName, targetStatusName, resolutionName = null) {
-  if (!targetStatusName || normalise(currentStatusName) === normalise(targetStatusName)) {
-    return false;
-  }
-
-  const getResponse = await api.asApp().requestJira(
-    route`/rest/api/3/issue/${issueKey}/transitions`,
-    { method: "GET", headers: { Accept: "application/json" } }
-  );
-
+async function transitionToStatus(issueKey, currentStatusName, targetStatusName) {
+  if (!targetStatusName || normalise(currentStatusName) === normalise(targetStatusName)) return false;
+  const getResponse = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/transitions`, {
+    method: "GET", headers: { Accept: "application/json" }
+  });
   if (!getResponse.ok) {
-    const body = await getResponse.text();
-    await activity("error", "Could not read Jira transitions", body.slice(0, 400), issueKey);
+    await activity("error", "Could not read Jira transitions", (await getResponse.text()).slice(0, 400), issueKey);
     return false;
   }
-
-  const data = await getResponse.json();
-  const transitions = data.transitions ?? [];
-  const match = transitions.find(
-    (transition) => normalise(transition.to?.name) === normalise(targetStatusName)
-  );
-
+  const transitions = (await getResponse.json()).transitions ?? [];
+  const match = transitions.find((transition) => normalise(transition.to?.name) === normalise(targetStatusName));
   if (!match) {
     const available = transitions.map((item) => item.to?.name).filter(Boolean).join(", ");
-    console.log(`⚠️ ${issueKey} cannot transition to "${targetStatusName}". Available: ${available}`);
-    await activity(
-      "warning",
-      "Workflow transition unavailable",
-      `Wanted ${targetStatusName}. Available: ${available}`,
-      issueKey
-    );
+    await activity("warning", "Workflow transition unavailable", `Wanted ${targetStatusName}. Available: ${available}`, issueKey);
     return false;
   }
-
-  const payload = { transition: { id: match.id } };
-  if (resolutionName) payload.fields = { resolution: { name: resolutionName } };
-
-  const response = await api.asApp().requestJira(
-    route`/rest/api/3/issue/${issueKey}/transitions`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(payload)
-    }
-  );
-
+  const response = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/transitions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ transition: { id: match.id } })
+  });
   if (!response.ok) {
-    const body = await response.text();
-    await activity("error", "Workflow transition failed", body.slice(0, 400), issueKey);
+    await activity("error", "Workflow transition failed", (await response.text()).slice(0, 400), issueKey);
     return false;
   }
-
-  console.log(`✅ ${issueKey} transitioned to "${targetStatusName}"`);
   await activity("info", "Jira status changed", `${currentStatusName} → ${targetStatusName}`, issueKey);
   return true;
 }
 
 async function getDHL(baseUrl, apiKey, trackingNumber) {
-  const response = await api.fetch(
-    `${baseUrl}?trackingNumber=${encodeURIComponent(trackingNumber)}`,
-    {
-      method: "GET",
-      headers: { "DHL-API-Key": apiKey, Accept: "application/json" }
-    }
-  );
-
-  if (response.status === 429) {
-    return { rateLimited: true, retryAfter: response.headers.get("Retry-After") };
-  }
-  if (!response.ok) {
-    return { error: true, status: response.status, body: await response.text() };
-  }
+  const response = await api.fetch(`${baseUrl}?trackingNumber=${encodeURIComponent(trackingNumber)}`, {
+    method: "GET", headers: { "DHL-API-Key": apiKey, Accept: "application/json" }
+  });
+  if (response.status === 429) return { rateLimited: true, retryAfter: response.headers.get("Retry-After") };
+  if (!response.ok) return { error: true, status: response.status, body: await response.text() };
   return { ok: true, data: await response.json() };
-}
-
-async function getTerminalIssueKeys() {
-  return new Set((await kvs.get(TERMINAL_ISSUES_KEY)) || []);
-}
-
-async function markTerminalIssue(issueKey) {
-  const current = await getTerminalIssueKeys();
-  if (current.has(issueKey)) return;
-  current.add(issueKey);
-  await kvs.set(TERMINAL_ISSUES_KEY, [...current].slice(-5000));
 }
 
 async function searchEligibleIssues(config) {
   const fields = config.fields || {};
   if (!fields.tracking) throw new Error("Tracking number field is not configured.");
-
   let jql = `${jqlString(fields.tracking)} IS NOT EMPTY AND project = ${jqlString(config.projectKey)}`;
-
   if (fields.client && config.clients?.length) {
     jql += ` AND ${jqlString(fields.client)} IN (${config.clients.map(jqlString).join(", ")})`;
   }
-
   const terminalDeliveryValues = (config.statusMappings || [])
     .filter((mapping) => mapping?.terminal && mapping?.deliveryStatus)
     .map((mapping) => mapping.deliveryStatus);
-
   if (fields.deliveryStatus && terminalDeliveryValues.length) {
     jql += ` AND (${jqlString(fields.deliveryStatus)} IS EMPTY OR ${jqlString(fields.deliveryStatus)} NOT IN (${terminalDeliveryValues.map(jqlString).join(", ")}))`;
   }
-
-  const fieldsParam = [
-    fields.tracking,
-    fields.deliveryStatus,
-    fields.deliveryDate,
-    fields.signedFor,
-    fields.dateSent,
-    fields.lastDhlCheck,
-    fields.client,
-    "status"
-  ].filter(Boolean).join(",");
-
-  console.log("📥 JQL:", jql);
-
+  const fieldsParam = [fields.tracking, fields.deliveryStatus, fields.deliveryDate, fields.signedFor, fields.dateSent, fields.lastDhlCheck, fields.client, "status"].filter(Boolean).join(",");
   const allIssues = [];
   let nextPageToken = null;
-
   do {
     const response = nextPageToken
-      ? await api.asApp().requestJira(
-          route`/rest/api/3/search/jql?jql=${jql}&maxResults=${MAX_SEARCH_RESULTS}&fields=${fieldsParam}&nextPageToken=${nextPageToken}`,
-          { method: "GET", headers: { Accept: "application/json" } }
-        )
-      : await api.asApp().requestJira(
-          route`/rest/api/3/search/jql?jql=${jql}&maxResults=${MAX_SEARCH_RESULTS}&fields=${fieldsParam}`,
-          { method: "GET", headers: { Accept: "application/json" } }
-        );
-
+      ? await api.asApp().requestJira(route`/rest/api/3/search/jql?jql=${jql}&maxResults=${MAX_SEARCH_RESULTS}&fields=${fieldsParam}&nextPageToken=${nextPageToken}`, { method: "GET", headers: { Accept: "application/json" } })
+      : await api.asApp().requestJira(route`/rest/api/3/search/jql?jql=${jql}&maxResults=${MAX_SEARCH_RESULTS}&fields=${fieldsParam}`, { method: "GET", headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error(await response.text());
     const data = await response.json();
     allIssues.push(...(data.issues ?? []));
     nextPageToken = data.nextPageToken ?? null;
   } while (nextPageToken && allIssues.length < MAX_TOTAL_ISSUES);
-
-  const terminalIssueKeys = await getTerminalIssueKeys();
-  return allIssues
-    .filter((issue) => !terminalIssueKeys.has(issue.key))
-    .slice(0, MAX_TOTAL_ISSUES);
+  return allIssues.slice(0, MAX_TOTAL_ISSUES);
 }
 
 export async function run() {
   pendingActivity = [];
-  console.log("DHL Tracking App v6.3 - storage-optimised activity logging");
+  console.log("DHL Tracking App v6.4 - low-KVS scheduler");
 
-  const config = await getConfig();
-  if (!config.enabled) {
-    return;
-  }
-
-  const apiKey = await kvs.getSecret(DHL_API_KEY_SECRET);
+  const { config, apiKey } = await loadRuntimeState();
+  if (!config.enabled) return;
   if (!apiKey) {
     console.log("⚠️ DHL API key is not configured.");
-    await activity("warning", "Scheduler stopped", "DHL API key is not configured.");
-    await flushActivity();
     return;
   }
 
@@ -403,31 +294,30 @@ export async function run() {
   });
 
   const toProcess = issues.slice(0, Number(config.maxPerRun || 3));
-  console.log(`⚙️ Processing ${toProcess.length} issue(s): ${toProcess.map((issue) => issue.key).join(", ")}`);
+  if (toProcess.length === 0) return;
 
-  for (const issue of toProcess) {
+  // One terminal-state read per scheduler invocation, and only when there is actual work.
+  const terminalEntries = (await kvs.get(TERMINAL_ISSUES_KEY)) || [];
+  const terminalSet = new Set(terminalEntries);
+  const newTerminalEntries = [];
+  const candidates = toProcess.filter((issue) => {
+    const tracking = issue.fields[config.fields.tracking];
+    return tracking && !terminalSet.has(terminalKey(issue.key, tracking));
+  });
+
+  for (const issue of candidates) {
     const issueKey = issue.key;
     const trackingNumber = issue.fields[config.fields.tracking];
     const currentStatus = issue.fields.status?.name || "";
-    if (!trackingNumber) continue;
 
     await sleep(DELAY_MS);
-    console.log(`📦 Checking ${issueKey}`);
-
     const dhl = await getDHL(config.dhlBaseUrl || DHL_DEFAULT_URL, apiKey, trackingNumber);
-
     if (dhl.rateLimited) {
       await activity("warning", "DHL rate limit reached", `Retry-After: ${dhl.retryAfter || "unknown"}`);
       break;
     }
-
     if (!dhl.ok) {
-      await activity(
-        "error",
-        "DHL tracking request failed",
-        `HTTP ${dhl.status || "unknown"}: ${String(dhl.body || "").slice(0, 300)}`,
-        issueKey
-      );
+      await activity("error", "DHL tracking request failed", `HTTP ${dhl.status || "unknown"}: ${String(dhl.body || "").slice(0, 300)}`, issueKey);
       continue;
     }
 
@@ -444,12 +334,8 @@ export async function run() {
     const latestCode = latest?.statusCode || latest?.code || shipment?.status?.statusCode || "";
     const categoryLabel = STANDARD_DHL_CATEGORIES.find((item) => item.category === category)?.label || category;
 
-    console.log(`📬 ${issueKey}: ${categoryLabel} — ${latestDescription}`);
-
     const fieldUpdate = {};
-    if (config.fields?.lastDhlCheck) {
-      fieldUpdate[config.fields.lastDhlCheck] = new Date().toISOString();
-    }
+    if (config.fields?.lastDhlCheck) fieldUpdate[config.fields.lastDhlCheck] = new Date().toISOString();
 
     let deliveredDate = "";
     let signedFor = "";
@@ -465,77 +351,54 @@ export async function run() {
 
     if (category === "delivered") {
       deliveredDate = String(latest?.timestamp || shipment?.status?.timestamp || "").split("T")[0];
-      signedFor =
-        shipment?.proofOfDelivery?.recipientName ||
-        latest?.receiverName ||
-        latest?.signature ||
-        "Unknown";
-
-      if (config.fields?.deliveryDate && deliveredDate) {
-        fieldUpdate[config.fields.deliveryDate] = deliveredDate;
-      }
-      if (config.fields?.signedFor) {
-        fieldUpdate[config.fields.signedFor] = signedFor;
-      }
+      signedFor = shipment?.proofOfDelivery?.recipientName || latest?.receiverName || latest?.signature || "Unknown";
+      if (config.fields?.deliveryDate && deliveredDate) fieldUpdate[config.fields.deliveryDate] = deliveredDate;
+      if (config.fields?.signedFor) fieldUpdate[config.fields.signedFor] = signedFor;
     }
 
     for (const extra of config.additionalFieldMappings || []) {
       if (!extra?.jiraFieldId || !extra?.dhlPath) continue;
       const value = getPath(shipment, extra.dhlPath);
-      if (value === undefined || value === null || typeof value === "object") continue;
+      if (value == null || typeof value === "object") continue;
       fieldUpdate[extra.jiraFieldId] = String(value);
     }
 
     const fieldsUpdated = await updateIssueFields(issueKey, fieldUpdate);
-    const meaningfulFieldCount = Object.keys(fieldUpdate).filter(
-      (fieldId) => fieldId !== config.fields?.lastDhlCheck
-    ).length;
+    const meaningfulFieldCount = Object.keys(fieldUpdate).filter((fieldId) => fieldId !== config.fields?.lastDhlCheck).length;
     if (fieldsUpdated && meaningfulFieldCount > 0) {
-      await activity(
-        "info",
-        "Jira fields updated",
-        `${categoryLabel}: ${meaningfulFieldCount} meaningful field(s) updated. ${latestDescription}`,
-        issueKey
-      );
+      await activity("info", "Jira fields updated", `${categoryLabel}: ${meaningfulFieldCount} meaningful field(s) updated. ${latestDescription}`, issueKey);
     }
 
     let transitioned = false;
-    if (mapping?.jiraStatus) {
-      transitioned = await transitionToStatus(
-        issueKey,
-        currentStatus,
-        mapping.jiraStatus,
-        category === "delivered" ? "Done" : null
-      );
-    }
+    if (mapping?.jiraStatus) transitioned = await transitionToStatus(issueKey, currentStatus, mapping.jiraStatus);
 
     if (config.comments?.enabled && mapping?.commentTemplate && (transitioned || deliveryStatusChanged)) {
-      const comment = renderTemplate(mapping.commentTemplate, {
-        issueKey,
-        trackingNumber,
-        dhlCategory: categoryLabel,
-        dhlDescription: latestDescription,
-        dhlCode: latestCode,
-        deliveryStatus: mapping?.deliveryStatus || "",
-        date: deliveredDate,
-        signedFor
-      });
-      await addInternalComment(issueKey, comment);
+      await addInternalComment(issueKey, renderTemplate(mapping.commentTemplate, {
+        issueKey, trackingNumber, dhlCategory: categoryLabel, dhlDescription: latestDescription,
+        dhlCode: latestCode, deliveryStatus: mapping?.deliveryStatus || "", date: deliveredDate, signedFor
+      }));
     }
 
     if (mapping?.terminal) {
-      await markTerminalIssue(issueKey);
+      const key = terminalKey(issueKey, trackingNumber);
+      if (!terminalSet.has(key)) {
+        terminalSet.add(key);
+        newTerminalEntries.push(key);
+      }
       await activity("info", "Tracking completed", `${categoryLabel} is configured as a terminal DHL state.`, issueKey);
     }
 
-    if (!mapping) {
-      await activity("warning", "No mapping configured", `${categoryLabel} has no enabled mapping.`, issueKey);
-    }
+    if (!mapping) await activity("warning", "No mapping configured", `${categoryLabel} has no enabled mapping.`, issueKey);
   }
 
-  console.log("✅ DHL Tracking v6.3 scheduler complete");
-  if (pendingActivity.length > 0) {
-    await activity("info", "Scheduler complete", `${toProcess.length} issue(s) checked; notable activity recorded.`);
+  // At most one terminal-state write per scheduler invocation.
+  if (newTerminalEntries.length > 0) {
+    const combined = [...terminalEntries, ...newTerminalEntries].slice(-MAX_TERMINAL_SHIPMENTS);
+    await kvs.set(TERMINAL_ISSUES_KEY, combined);
   }
-  await flushActivity();
+
+  if (pendingActivity.length > 0) {
+    await activity("info", "Scheduler complete", `${candidates.length} shipment(s) checked; notable activity recorded.`);
+    await flushActivity();
+  }
 }
