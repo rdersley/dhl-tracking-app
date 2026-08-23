@@ -20,6 +20,22 @@ modules:
       title: DHL Tracking
       useAsConfig: true
 
+    - key: dhl-shipment-admin
+      resource: shipment-admin-page
+      render: native
+      resolver:
+        function: shipment-resolver
+      title: DHL Shipment Creation
+
+  jira:issueContext:
+    - key: dhl-create-shipment-context
+      resource: shipment-panel
+      render: native
+      resolver:
+        function: shipment-resolver
+      title: DHL Shipment
+      label: Create DHL Shipment
+
   function:
     - key: dhl-scheduler
       handler: index.run
@@ -28,9 +44,16 @@ modules:
     - key: admin-resolver
       handler: resolver.handler
 
+    - key: shipment-resolver
+      handler: shipping-resolver.handler
+
 resources:
   - key: admin-page
     path: src/frontend/admin-page.jsx
+  - key: shipment-admin-page
+    path: src/frontend/shipping-admin.jsx
+  - key: shipment-panel
+    path: src/frontend/shipping-panel.jsx
 
 permissions:
   scopes:
@@ -43,6 +66,8 @@ permissions:
     fetch:
       backend:
         - address: "https://api-eu.dhl.com"
+          inScopeEUD: false
+        - address: "https://express.api.dhl.com"
           inScopeEUD: false
 
 app:
