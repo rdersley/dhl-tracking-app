@@ -45,7 +45,7 @@ modules:
       handler: resolver.handler
 
     - key: shipment-resolver
-      handler: shipping-resolver.handler
+      handler: shipping-resolver-v2.handler
 
 resources:
   - key: admin-page
