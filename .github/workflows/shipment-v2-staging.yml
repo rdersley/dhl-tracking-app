@@ -47,6 +47,7 @@ jobs:
         run: |
           test -n "$FORGE_EMAIL" || (echo "Missing GitHub secret FORGE_EMAIL" && exit 1)
           test -n "$FORGE_API_TOKEN" || (echo "Missing GitHub secret FORGE_API_TOKEN" && exit 1)
+          forge settings set usage-analytics false
           forge login --email "$FORGE_EMAIL" --token "$FORGE_API_TOKEN" --non-interactive
 
       - name: Forge lint
@@ -80,7 +81,9 @@ jobs:
         env:
           FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
           FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
-        run: forge login --email "$FORGE_EMAIL" --token "$FORGE_API_TOKEN" --non-interactive
+        run: |
+          forge settings set usage-analytics false
+          forge login --email "$FORGE_EMAIL" --token "$FORGE_API_TOKEN" --non-interactive
 
       - name: Deploy staging
         run: forge deploy --environment staging --non-interactive --approve MAJOR_VERSION_RULE
