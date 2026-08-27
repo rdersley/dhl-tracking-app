@@ -33,7 +33,7 @@ const DEFAULT = {
     province: "", provinceCode: "", postalCode: "", countryCode: ""
   },
   responseMappings: {
-    shipmentId: "", productCode: "", createdAt: "", estimatedDelivery: "", statusSummary: "", pickupConfirmation: ""
+    shipmentId: "", productCode: "", createdAt: "", estimatedDelivery: "", statusSummary: "", pickupConfirmation: "", documentSummary: ""
   }
 };
 
@@ -72,6 +72,24 @@ async function readIssue(issueKey, config) {
   return response.json();
 }
 
+async function updateJiraFields(issueKey, fields) {
+  if (!Object.keys(fields || {}).length) return true;
+  const jira = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ fields })
+  });
+  if (!jira.ok) throw new Error(await jira.text());
+  return true;
+}
+
+async function writeFeedback(issueKey, config, message) {
+  const fieldId = config.responseMappings?.statusSummary;
+  if (!fieldId) return;
+  try { await updateJiraFields(issueKey, { [fieldId]: String(message).slice(0, 2000) }); }
+  catch (error) { console.log("Could not write DHL feedback to Jira", String(error)); }
+}
+
 function buildPreview(issue, config) {
   const m = config.fieldMappings;
   return {
@@ -90,8 +108,8 @@ function buildPreview(issue, config) {
       shipmentDate: fieldValue(issue, m.shipmentDate), packageCount: Math.max(1, Number(fieldValue(issue, m.packageCount) || 1)),
       weight: Number(fieldValue(issue, m.weight)), length: Number(fieldValue(issue, m.length)), width: Number(fieldValue(issue, m.width)),
       height: Number(fieldValue(issue, m.height)), contents: fieldValue(issue, m.contents), reference: fieldValue(issue, m.reference) || issue.key,
-      declaredValue: Number(fieldValue(issue, m.declaredValue) || 0), currency: fieldValue(issue, m.currency) || "EUR",
-      incoterm: fieldValue(issue, m.incoterm) || "DAP", exportReason: fieldValue(issue, m.exportReason), invoiceNumber: fieldValue(issue, m.invoiceNumber),
+      declaredValue: Number(fieldValue(issue, m.declaredValue) || 0), currency: fieldValue(issue, m.currency).toUpperCase() || "EUR",
+      incoterm: fieldValue(issue, m.incoterm).toUpperCase() || "DAP", exportReason: fieldValue(issue, m.exportReason), invoiceNumber: fieldValue(issue, m.invoiceNumber),
       invoiceDate: fieldValue(issue, m.invoiceDate), commodityDescription: fieldValue(issue, m.commodityDescription),
       commodityQuantity: Number(fieldValue(issue, m.commodityQuantity) || 0), commodityUnitValue: Number(fieldValue(issue, m.commodityUnitValue) || 0),
       commodityHsCode: fieldValue(issue, m.commodityHsCode), commodityOriginCountry: fieldValue(issue, m.commodityOriginCountry).toUpperCase(),
@@ -140,7 +158,8 @@ async function callDhl(config, path, options = {}) {
   let body;
   try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
   if (!response.ok) {
-    const message = body?.detail || body?.title || body?.message || (Array.isArray(body?.additionalDetails) ? body.additionalDetails.map(x => x?.message || x).join("; ") : "") || `DHL returned HTTP ${response.status}`;
+    const details = Array.isArray(body?.additionalDetails) ? body.additionalDetails.map((x) => x?.message || x?.detail || x).join("; ") : "";
+    const message = body?.detail || body?.title || body?.message || details || `DHL returned HTTP ${response.status}`;
     const error = new Error(String(message).slice(0, 1200));
     error.status = response.status;
     error.body = body;
@@ -181,7 +200,7 @@ function buildShipmentRequest(config, preview) {
     invoice: s.invoiceNumber ? { number: s.invoiceNumber, date: s.invoiceDate || new Date().toISOString().slice(0, 10) } : undefined
   } : undefined;
   const outputImageProperties = { printerDPI: 300, encodingFormat: "pdf", imageOptions: [{ typeCode: "label", templateName: "ECOM26_84_001" }] };
-  const notifications = s.notificationEmail ? [{ typeCode: "email", receiverId: s.notificationEmail, languageCode: config.notificationLanguage || "en", message: "Your DHL Express shipment has been created." }] : undefined;
+  const notification = s.notificationEmail ? [{ typeCode: "email", receiverId: s.notificationEmail, languageCode: config.notificationLanguage || "en" }] : undefined;
 
   return {
     plannedShippingDateAndTime: planned,
@@ -204,7 +223,7 @@ function buildShipmentRequest(config, preview) {
     },
     customerReferences: [{ value: s.reference, typeCode: "CU" }],
     outputImageProperties,
-    notification: notifications
+    notification
   };
 }
 
@@ -222,7 +241,8 @@ function summarizeDhlResponse(response) {
     estimatedDelivery: response?.estimatedDeliveryDate?.estimatedDeliveryDateAndTime || response?.estimatedDeliveryDate || "",
     pickupConfirmation: response?.dispatchConfirmationNumber || response?.pickupConfirmationNumber || "",
     warnings: Array.isArray(warnings) ? warnings.map((w) => w?.message || w?.detail || String(w)) : [],
-    documents
+    documents,
+    documentSummary: documents.map((d) => `${d.typeCode}${d.formatCode ? ` (${d.formatCode})` : ""}`).join(", ")
   };
 }
 
@@ -235,16 +255,13 @@ async function writeResponseToJira(issueKey, config, response) {
     createdAt: new Date().toISOString(),
     estimatedDelivery: summary.estimatedDelivery,
     statusSummary: summary.warnings.join("; ") || "Shipment created successfully",
-    pickupConfirmation: summary.pickupConfirmation
+    pickupConfirmation: summary.pickupConfirmation,
+    documentSummary: summary.documentSummary
   };
   const fields = { [config.trackingFieldId]: String(summary.trackingNumber) };
   for (const [key, id] of Object.entries(config.responseMappings || {})) if (id && values[key]) fields[id] = String(values[key]);
-  const jira = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ fields })
-  });
-  if (!jira.ok) throw new Error(`DHL shipment was created, but Jira update failed: ${await jira.text()}`);
+  try { await updateJiraFields(issueKey, fields); }
+  catch (error) { throw new Error(`DHL shipment was created, but Jira update failed: ${error.message}`); }
   return { ...summary, fieldsUpdated: Object.keys(fields).length };
 }
 
@@ -279,8 +296,8 @@ export const handler = makeResolver({
     const q = new URLSearchParams({ type: "pickup", countryCode: config.shipper.countryCode || "IE", cityName: config.shipper.city || "Dublin", strictValidation: "false" });
     if (config.shipper.postalCode) q.set("postalCode", config.shipper.postalCode);
     try {
-      const response = await callDhl(config, `/address-validate?${q}`, { method: "GET" });
-      return { ok: true, message: `Connected successfully to MyDHL ${config.environment}.`, responseSummary: response?.warnings || [] };
+      await callDhl(config, `/address-validate?${q}`, { method: "GET" });
+      return { ok: true, message: `Connected successfully to MyDHL ${config.environment}.` };
     } catch (error) {
       return { ok: false, message: error.message, status: error.status || 0 };
     }
@@ -302,11 +319,12 @@ export const handler = makeResolver({
     if (local.errors.length) return { ok: false, local: true, ...local, preview };
     try {
       const validation = await validateAddress(config, preview);
-      const suggestions = validation?.serviceArea || validation?.address || validation?.warnings || [];
       await appendLog("info", "DHL address validation passed", "Destination address passed DHL validation.", issue.key);
-      return { ok: true, preview, warnings: local.warnings, validation, suggestions };
+      await writeFeedback(issue.key, config, "DHL address validation passed");
+      return { ok: true, preview, warnings: local.warnings, validation };
     } catch (error) {
       await appendLog("warning", "DHL address validation failed", String(error.message).slice(0, 500), issue.key);
+      await writeFeedback(issue.key, config, `Address validation failed: ${error.message}`);
       return { ok: false, errors: [error.message], warnings: local.warnings, preview, status: error.status || 0, details: error.body || null };
     }
   },
@@ -339,6 +357,7 @@ export const handler = makeResolver({
     } catch (error) {
       await kvs.set(lockKey, { fingerprint, createdAt: Date.now(), state: "uncertain", errorStatus: error.status || 0 });
       await appendLog("error", "DHL shipment creation failed", String(error.message).slice(0, 500), issue.key);
+      await writeFeedback(issue.key, config, `Shipment creation failed: ${error.message}`);
       return { ok: false, errors: [error.message], warnings: local.warnings, status: error.status || 0, details: error.body || null, uncertain: !error.status || error.status >= 500 };
     }
   },
