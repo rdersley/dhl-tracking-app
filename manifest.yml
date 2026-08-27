@@ -39,13 +39,14 @@ modules:
   function:
     - key: dhl-scheduler
       handler: index.run
-      timeoutSeconds: 180
+      timeoutSeconds: 900
 
     - key: admin-resolver
       handler: resolver.handler
 
     - key: shipment-resolver
       handler: shipping-resolver-v2.handler
+      timeoutSeconds: 120
 
 resources:
   - key: admin-page
