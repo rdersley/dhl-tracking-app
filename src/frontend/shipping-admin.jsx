@@ -8,7 +8,7 @@ const SOURCE_FIELDS = {
   shipmentDate:"Shipment date",packageCount:"Package count",weight:"Weight (kg)",length:"Length (cm)",width:"Width (cm)",height:"Height (cm)",contents:"Contents / description",reference:"Customer reference",declaredValue:"Declared value",currency:"Currency",incoterm:"Incoterm",exportReason:"Export reason",
   invoiceNumber:"Invoice number",invoiceDate:"Invoice date",commodityDescription:"Commodity description",commodityQuantity:"Commodity quantity",commodityUnitValue:"Commodity unit value",commodityHsCode:"HS / tariff code",commodityOriginCountry:"Country of manufacture/origin",recipientNotificationEmail:"Recipient notification email"
 };
-const RESPONSE_FIELDS = {shipmentId:"Shipment / dispatch ID",productCode:"DHL product/service",createdAt:"Shipment creation timestamp",estimatedDelivery:"Estimated delivery",statusSummary:"DHL warnings/status summary",pickupConfirmation:"Pickup confirmation"};
+const RESPONSE_FIELDS = {shipmentId:"Shipment / dispatch ID",productCode:"DHL product/service",createdAt:"Shipment creation timestamp",estimatedDelivery:"Estimated delivery",statusSummary:"DHL validation / warnings / status feedback",pickupConfirmation:"Pickup confirmation",documentSummary:"DHL label/document summary"};
 function opt(value,label=value){return {value:value||"",label:label||"— Not mapped —"}}
 function Section({title,open,toggle,children}){return <Box><Button appearance="subtle" onClick={toggle}>{open?"▼":"▶"} {title}</Button>{open?<Stack space="space.200">{children}</Stack>:null}</Box>}
 
@@ -59,6 +59,7 @@ function App(){
   </Section>
 
   <Section title="DHL → Jira response mappings" open={open.response} toggle={()=>setOpen(o=>({...o,response:!o.response}))}>
+   <SectionMessage appearance="information">Tracking number is required. Other fields are optional. The status feedback field also receives DHL validation and shipment-creation errors so agents can see DHL feedback directly on the Jira ticket.</SectionMessage>
    <Label labelFor="tracking">Tracking / waybill field (required)</Label><Select inputId="tracking" options={fieldOptions} value={selected(config.trackingFieldId)} onChange={s=>root("trackingFieldId",s?.value||"")}/>
    {Object.entries(RESPONSE_FIELDS).map(([k,l])=><Box key={k}><Label labelFor={`resp-${k}`}>{l}</Label><Select inputId={`resp-${k}`} options={fieldOptions} value={selected(config.responseMappings?.[k])} onChange={s=>response(k,s?.value||"")}/></Box>)}
   </Section>
