@@ -26,6 +26,7 @@ modules:
       resolver:
         function: shipment-resolver
       title: DHL Shipment Creation
+      useAsGetStarted: true
 
   jira:issueContext:
     - key: dhl-create-shipment-context
@@ -46,7 +47,6 @@ modules:
 
     - key: shipment-resolver
       handler: shipping-resolver-v2.handler
-      timeoutSeconds: 120
 
 resources:
   - key: admin-page
