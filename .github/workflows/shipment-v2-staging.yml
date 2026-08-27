@@ -24,6 +24,9 @@ jobs:
     name: Static QA and Forge lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,15 +43,11 @@ jobs:
       - name: Install Forge CLI
         run: npm install --global @forge/cli@latest
 
-      - name: Forge authentication check
-        env:
-          FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
-          FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+      - name: Forge environment authentication check
         run: |
           test -n "$FORGE_EMAIL" || (echo "Missing GitHub secret FORGE_EMAIL" && exit 1)
           test -n "$FORGE_API_TOKEN" || (echo "Missing GitHub secret FORGE_API_TOKEN" && exit 1)
           forge settings set usage-analytics false
-          forge login --email "$FORGE_EMAIL" --token "$FORGE_API_TOKEN" --non-interactive
 
       - name: Forge lint
         run: forge lint
@@ -62,6 +61,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: dhl-staging
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -76,14 +78,7 @@ jobs:
         run: |
           npm ci
           npm install --global @forge/cli@latest
-
-      - name: Login to Forge
-        env:
-          FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
-          FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
-        run: |
           forge settings set usage-analytics false
-          forge login --email "$FORGE_EMAIL" --token "$FORGE_API_TOKEN" --non-interactive
 
       - name: Deploy staging
         run: forge deploy --environment staging --non-interactive --approve MAJOR_VERSION_RULE
