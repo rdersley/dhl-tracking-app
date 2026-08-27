@@ -1,0 +1,139 @@
+name: DHL Shipment V2 - Staging Deploy and QA
+
+on:
+  push:
+    branches:
+      - shipment-creation-v2
+  workflow_dispatch:
+    inputs:
+      run_dhl_test_e2e:
+        description: "Run MyDHL TEST-mode validation/creation checks (requires configured safe test issue)"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: dhl-shipment-v2-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Static QA and Forge lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Install Forge CLI
+        run: npm install --global @forge/cli@latest
+
+      - name: Forge authentication check
+        env:
+          FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+          FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+        run: |
+          test -n "$FORGE_EMAIL" || (echo "Missing GitHub secret FORGE_EMAIL" && exit 1)
+          test -n "$FORGE_API_TOKEN" || (echo "Missing GitHub secret FORGE_API_TOKEN" && exit 1)
+          forge login --email "$FORGE_EMAIL" --token "$FORGE_API_TOKEN" --non-interactive
+
+      - name: Forge lint
+        run: forge lint
+
+      - name: Shipment V2 source guardrails
+        run: node qa/shipment-static-check.mjs
+
+  deploy-staging:
+    name: Deploy Nuvriqo staging
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: dhl-staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies and Forge CLI
+        run: |
+          npm ci
+          npm install --global @forge/cli@latest
+
+      - name: Login to Forge
+        env:
+          FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+          FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+        run: forge login --email "$FORGE_EMAIL" --token "$FORGE_API_TOKEN" --non-interactive
+
+      - name: Deploy staging
+        run: forge deploy --environment staging --non-interactive --approve MAJOR_VERSION_RULE
+
+      - name: Upgrade Nuvriqo installation
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+        run: |
+          test -n "$BASE_URL" || (echo "Missing GitHub secret BASE_URL" && exit 1)
+          forge install --upgrade --site "$BASE_URL" --product Jira --environment staging --confirm-scopes --non-interactive
+
+  browser-qa:
+    name: Playwright staging smoke QA
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Playwright for QA
+        run: |
+          npm install --no-save @playwright/test@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Restore Jira authenticated browser state
+        env:
+          STORAGE_STATE_GZIP: ${{ secrets.STORAGE_STATE_GZIP }}
+        run: |
+          test -n "$STORAGE_STATE_GZIP" || (echo "Missing GitHub secret STORAGE_STATE_GZIP" && exit 1)
+          mkdir -p .auth
+          echo "$STORAGE_STATE_GZIP" | base64 -d | gunzip > .auth/storage-state.json
+          test -s .auth/storage-state.json
+
+      - name: Run staging browser QA
+        env:
+          BASE_URL: ${{ secrets.BASE_URL }}
+          QA_ISSUE_KEY: ${{ secrets.DHL_QA_ISSUE_KEY }}
+          RUN_DHL_TEST_E2E: ${{ github.event_name == 'workflow_dispatch' && inputs.run_dhl_test_e2e || false }}
+        run: npx playwright test -c qa/playwright.config.mjs
+
+      - name: Upload QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dhl-shipment-v2-qa-${{ github.run_number }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 14
