@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 15
     env:
       JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-      JIRA_TEST_ISSUE_KEY: ${{ secrets.JIRA_TEST_ISSUE_KEY }}
+      JIRA_TEST_ISSUE_KEY: TEST-4
 
     steps:
       - uses: actions/checkout@v4
