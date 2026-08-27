@@ -50,7 +50,7 @@ jobs:
           forge settings set usage-analytics false
 
       - name: Forge lint
-        run: forge lint
+        run: forge lint --environment staging
 
       - name: Shipment V2 source guardrails
         run: node qa/shipment-static-check.mjs
