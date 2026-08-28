@@ -114,6 +114,7 @@ jobs:
     needs: deploy-staging
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: dhl-staging
     steps:
       - name: Checkout
         uses: actions/checkout@v4
