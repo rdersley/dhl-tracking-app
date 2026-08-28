@@ -131,11 +131,11 @@ jobs:
 
       - name: Restore Jira authenticated browser state
         env:
-          STORAGE_STATE_GZIP: ${{ secrets.STORAGE_STATE_GZIP }}
+          JIRA_STORAGE_STATE_GZIP_B64: ${{ secrets.JIRA_STORAGE_STATE_GZIP_B64 }}
         run: |
-          test -n "$STORAGE_STATE_GZIP" || (echo "Missing GitHub secret STORAGE_STATE_GZIP" && exit 1)
+          test -n "$JIRA_STORAGE_STATE_GZIP_B64" || (echo "Missing GitHub secret JIRA_STORAGE_STATE_GZIP_B64" && exit 1)
           mkdir -p .auth
-          echo "$STORAGE_STATE_GZIP" | base64 -d | gunzip > .auth/storage-state.json
+          echo "$JIRA_STORAGE_STATE_GZIP_B64" | base64 -d | gunzip > .auth/storage-state.json
           test -s .auth/storage-state.json
 
       - name: Run staging browser QA
