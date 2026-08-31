@@ -29,6 +29,7 @@ permissions:
     - write:jira-work
     - read:servicedesk-request
     - write:servicedesk-request
+    - storage:app
   external:
     fetch:
       backend:
