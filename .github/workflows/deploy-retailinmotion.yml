@@ -1,0 +1,43 @@
+name: Deploy RetailInMotion
+
+on:
+  push:
+    branches:
+      - deploy/retailinmotion-hw-reconciliation
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: nuvriqo-sandbox
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies and Forge CLI
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; fi
+          npm install --global @forge/cli
+          forge settings set usage-analytics false
+      - name: Run tests
+        run: npm test
+      - name: Forge lint
+        shell: bash
+        run: |
+          set +e
+          forge lint 2>&1 | tee /tmp/forge-lint.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ] && grep -Eq '\(0 errors,' /tmp/forge-lint.log; then exit 0; fi
+          exit "$status"
+      - name: Deploy Forge app
+        run: forge deploy --environment marketplace-v6-test --non-interactive
+      - name: Upgrade RetailInMotion installation
+        run: forge install --upgrade --site retailinmotion.atlassian.net --product jira --environment marketplace-v6-test --confirm-scopes --non-interactive
