@@ -1,4 +1,4 @@
-name: Deploy RetailInMotion
+name: Deploy RetailInMotion Sandbox
 
 on:
   push:
@@ -40,5 +40,5 @@ jobs:
           exit "$status"
       - name: Deploy Forge app
         run: forge deploy --environment development --approve MAJOR_VERSION_RULE --non-interactive
-      - name: Upgrade RetailInMotion installation
-        run: forge install --upgrade --site retailinmotion.atlassian.net --product jira --environment development --confirm-scopes --non-interactive
+      - name: Install RetailInMotion sandbox
+        run: forge install --site retailinmotion-sandbox1.atlassian.net --product jira --environment development --confirm-scopes --non-interactive
