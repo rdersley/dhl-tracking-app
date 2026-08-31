@@ -48,6 +48,10 @@ jobs:
         shell: bash
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Audit production dependencies
+        if: hashFiles('package-lock.json') != ''
+        shell: bash
+        run: npm audit --omit=dev --audit-level=high
       - name: Run root tests when defined
         if: hashFiles('package.json') != ''
         shell: bash
