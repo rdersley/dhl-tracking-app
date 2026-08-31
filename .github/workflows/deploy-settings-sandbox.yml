@@ -27,7 +27,7 @@ jobs:
         run: |
           npm install --global @forge/cli
           forge settings set usage-analytics false
-          forge settings set default-environment production
+          forge settings set default-environment development
       - name: Forge lint
         run: forge lint
       - name: Deploy sandbox test app
