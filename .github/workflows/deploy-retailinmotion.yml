@@ -26,6 +26,7 @@ jobs:
           if [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; fi
           npm install --global @forge/cli
           forge settings set usage-analytics false
+          forge settings set default-environment marketplace-v6-test
       - name: Run tests
         run: npm test
       - name: Forge lint
