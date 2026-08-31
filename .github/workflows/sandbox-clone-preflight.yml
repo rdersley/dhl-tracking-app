@@ -25,9 +25,10 @@ jobs:
           npm ci
           npm install --global @forge/cli
           forge settings set usage-analytics false
+          forge settings set default-environment development
       - name: Run tests
         run: npm test
-      - name: Forge lint
-        run: forge lint
       - name: List Developer Spaces
         run: forge developer-spaces list --json
+      - name: Forge lint
+        run: forge lint
