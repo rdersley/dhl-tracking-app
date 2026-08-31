@@ -1,0 +1,33 @@
+name: Sandbox Clone Preflight
+
+on:
+  push:
+    branches:
+      - deploy/retailinmotion-sandbox-clone
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    environment: nuvriqo-sandbox
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies and Forge CLI
+        run: |
+          npm ci
+          npm install --global @forge/cli
+          forge settings set usage-analytics false
+      - name: Run tests
+        run: npm test
+      - name: Forge lint
+        run: forge lint
+      - name: List Developer Spaces
+        run: forge developer-spaces list --json
