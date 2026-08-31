@@ -1,4 +1,4 @@
-name: Sandbox Clone Preflight
+name: Register and Deploy Sandbox Clone
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  preflight:
+  deploy-clone:
     runs-on: ubuntu-latest
     environment: nuvriqo-sandbox
     env:
@@ -25,10 +25,11 @@ jobs:
           npm ci
           npm install --global @forge/cli
           forge settings set usage-analytics false
-          forge settings set default-environment development
       - name: Run tests
         run: npm test
-      - name: List Developer Spaces
-        run: forge developer-spaces list --json
-      - name: Forge lint
-        run: forge lint
+      - name: Register unlicensed sandbox clone
+        run: forge register "Delivery Manager Sandbox Test" --developer-space-id bb1f92fd-56a9-4352-a90a-2b705b43d6e0 --accept-terms
+      - name: Show sandbox app id
+        run: grep -A 5 '^app:' manifest.yml
+      - name: Deploy sandbox clone to production
+        run: forge deploy --environment production --non-interactive
