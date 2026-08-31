@@ -28,8 +28,8 @@ const DELIVERY_STATUS_JQL = "Delivery Status[Dropdown]";
 
 const MIN_DAYS_SINCE_SENT = 3;
 const MAX_SEARCH_RESULTS = 100;
-const MAX_PER_RUN = 3;
-const DELAY_MS = 5000;
+const MAX_PER_RUN = 10;
+const DELAY_MS = 3000;
 
 const JIRA_STATUS = {
   DISPATCHED: "Dispatched to Customer",
@@ -316,17 +316,13 @@ function analyseDHLStatuses(statuses) {
     );
 
   return {
-    delivered: includesAny([
-      "delivered",
-    ]),
-
+    delivered: includesAny(["delivered"]),
     returnedToSender: includesAny([
       "return to sender",
       "returned to sender",
       "shipment returned",
       "returned to shipper",
     ]),
-
     deliveryFailed: includesAny([
       "delivery failed",
       "delivery attempt could not be completed",
@@ -336,13 +332,11 @@ function analyseDHLStatuses(statuses) {
       "incorrect address",
       "address information needed",
     ]),
-
     awaitingCollection: includesAny([
       "awaiting collection",
       "collection by the consignee",
       "ready for collection",
     ]),
-
     onHold: includesAny([
       "on hold",
       "held at",
@@ -350,7 +344,6 @@ function analyseDHLStatuses(statuses) {
       "clearance event",
       "exception",
     ]),
-
     outForDelivery: includesAny([
       "out for delivery",
       "out with courier",
@@ -358,7 +351,6 @@ function analyseDHLStatuses(statuses) {
       "with courier for delivery",
       "scheduled for delivery",
     ]),
-
     inTransit: includesAny([
       "in transit",
       "transit",
@@ -432,8 +424,7 @@ async function handleDelivered(issueKey, shipment) {
   const events = shipment?.events ?? [];
   const latest = events[0];
 
-  const deliveredDate =
-    latest?.timestamp?.split("T")[0] ?? null;
+  const deliveredDate = latest?.timestamp?.split("T")[0] ?? null;
 
   const signedFor =
     shipment?.proofOfDelivery?.recipientName ||
@@ -508,25 +499,17 @@ async function handleNonDelivered(issue, analysis) {
     targetDeliveryStatus = "In Transit";
   }
 
-  if (targetDeliveryStatus &&
-      currentDeliveryStatus !== targetDeliveryStatus) {
-    console.log(
-      `🚚 ${issueKey} Delivery Status → "${targetDeliveryStatus}"`
-    );
-
+  if (targetDeliveryStatus && currentDeliveryStatus !== targetDeliveryStatus) {
+    console.log(`🚚 ${issueKey} Delivery Status → "${targetDeliveryStatus}"`);
     await updateIssueFields(issueKey, {
-      [DELIVERY_STATUS_FIELD]: {
-        value: targetDeliveryStatus,
-      },
+      [DELIVERY_STATUS_FIELD]: { value: targetDeliveryStatus },
     });
   }
 
   if (targetWorkflowStatus) {
     await transitionToStatus(issueKey, targetWorkflowStatus);
   } else {
-    console.log(
-      `ℹ️ ${issueKey} remains in its current Jira workflow status`
-    );
+    console.log(`ℹ️ ${issueKey} remains in its current Jira workflow status`);
   }
 }
 
@@ -542,6 +525,7 @@ export async function run() {
 
   console.log("==============================================");
   console.log("DHL Tracking App v5");
+  console.log(`Batch size ${MAX_PER_RUN}, delay ${DELAY_MS}ms`);
   console.log("Dynamic workflow transitions enabled");
   console.log("==============================================");
 
@@ -563,9 +547,7 @@ export async function run() {
     const dateSent = parseJiraDate(issue.fields[DATE_SENT_FIELD]);
 
     if (!dateSent) {
-      console.log(
-        `⏭️ Skipping ${issue.key}: Date Sent is missing or invalid`
-      );
+      console.log(`⏭️ Skipping ${issue.key}: Date Sent is missing or invalid`);
       return false;
     }
 
@@ -588,9 +570,7 @@ export async function run() {
     const lastDifference =
       new Date(aLast).getTime() - new Date(bLast).getTime();
 
-    if (lastDifference !== 0) {
-      return lastDifference;
-    }
+    if (lastDifference !== 0) return lastDifference;
 
     const aSent = parseJiraDate(a.fields[DATE_SENT_FIELD]);
     const bSent = parseJiraDate(b.fields[DATE_SENT_FIELD]);
@@ -621,11 +601,16 @@ export async function run() {
 
     if (dhl.rateLimited) {
       console.log(
-        `⏱️ DHL rate limit reached. Retry-After: ` +
-        `${dhl.retryAfter ?? "unknown"}`
+        `⏱️ DHL rate limit reached. Retry-After: ${dhl.retryAfter ?? "unknown"}`
       );
       break;
     }
+
+    // Any completed non-429 attempt counts as a check. This prevents a bad/410
+    // tracking number from permanently staying at the front of the fair queue.
+    await updateIssueFields(issueKey, {
+      [LAST_DHL_CHECK_FIELD]: new Date().toISOString(),
+    });
 
     if (!dhl.ok) {
       console.log(
@@ -634,10 +619,6 @@ export async function run() {
       );
       continue;
     }
-
-    await updateIssueFields(issueKey, {
-      [LAST_DHL_CHECK_FIELD]: new Date().toISOString(),
-    });
 
     const shipment = dhl.data?.shipments?.[0];
 
@@ -648,9 +629,7 @@ export async function run() {
 
     const statuses = collectStatusStrings(shipment);
 
-    console.log(
-      `📬 ${issueKey} DHL statuses: ${JSON.stringify(statuses)}`
-    );
+    console.log(`📬 ${issueKey} DHL statuses: ${JSON.stringify(statuses)}`);
 
     const analysis = analyseDHLStatuses(statuses);
 

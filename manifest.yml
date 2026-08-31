@@ -1,17 +1,13 @@
 modules:
   scheduledTrigger:
-    - key: dhl-tracking-scheduler
-      function: main
-      interval: hour
-    - key: hardware-handover-scheduler
-      function: hardware-sync
+    - key: delivery-manager-scheduler
+      function: delivery-manager
       interval: fiveMinute
 
   function:
-    - key: main
-      handler: index.run
-    - key: hardware-sync
-      handler: hardware-sync.runHardwareSync
+    - key: delivery-manager
+      handler: scheduler.runCombinedScheduler
+      timeoutSeconds: 180
 
 permissions:
   scopes:
