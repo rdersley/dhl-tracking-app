@@ -15,6 +15,19 @@ async function jiraJson(path) {
   return { ok: true, data: await response.json() };
 }
 
+function uniqueStatusOptions(data) {
+  const names = new Set();
+  for (const issueType of data || []) {
+    for (const status of issueType.statuses || []) {
+      const name = String(status.name || "").trim();
+      if (name) names.add(name);
+    }
+  }
+  return [...names]
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => ({ label: name, value: name }));
+}
+
 resolver.define("getConfig", async () => getDeliveryManagerConfig());
 
 resolver.define("saveConfig", async ({ payload }) => {
@@ -30,12 +43,26 @@ resolver.define("getOptions", async () => {
 
   return {
     projects: projectsResult.ok
-      ? (projectsResult.data?.values || []).map((p) => ({ label: `${p.key} — ${p.name}`, value: p.key }))
+      ? (projectsResult.data?.values || [])
+          .map((p) => ({ label: `${p.key} — ${p.name}`, value: p.key }))
+          .sort((a, b) => a.label.localeCompare(b.label))
       : [],
     fields: fieldsResult.ok
-      ? (fieldsResult.data || []).map((f) => ({ label: `${f.name} (${f.id})`, value: f.id }))
+      ? (fieldsResult.data || [])
+          .map((f) => ({ label: String(f.name || f.id), value: f.id }))
+          .sort((a, b) => a.label.localeCompare(b.label))
       : [],
   };
+});
+
+resolver.define("getProjectStatuses", async ({ payload }) => {
+  const projectKey = String(payload?.projectKey || "").trim();
+  if (!projectKey) return { ok: false, projectKey: "", statuses: [], error: "No project selected" };
+
+  const result = await jiraJson(route`/rest/api/3/project/${projectKey}/statuses`);
+  return result.ok
+    ? { ok: true, projectKey, statuses: uniqueStatusOptions(result.data) }
+    : { ok: false, projectKey, statuses: [], error: `Could not load statuses for ${projectKey}` };
 });
 
 resolver.define("validateConfig", async ({ payload }) => {
@@ -57,7 +84,7 @@ resolver.define("validateConfig", async ({ payload }) => {
 
   const fieldsResult = await jiraJson(route`/rest/api/3/field`);
   const fields = fieldsResult.ok ? fieldsResult.data || [] : [];
-  const fieldIds = new Set(fields.map((f) => f.id));
+  const fieldNamesById = new Map(fields.map((f) => [f.id, f.name || f.id]));
   for (const [label, fieldId] of [
     ["Tracking Number", config.trackingField],
     ["Date Sent", config.dateSentField],
@@ -66,7 +93,12 @@ resolver.define("validateConfig", async ({ payload }) => {
     ["Signed For", config.signedForField],
     ["Last DHL Check", config.lastDhlCheckField],
   ]) {
-    checks.push({ key: label, ok: !!fieldId && fieldIds.has(fieldId), message: fieldId && fieldIds.has(fieldId) ? `Found ${fieldId}` : `Field ${fieldId || "not configured"} not found` });
+    const fieldName = fieldNamesById.get(fieldId);
+    checks.push({
+      key: label,
+      ok: !!fieldName,
+      message: fieldName ? `Found ${fieldName}` : `Field ${fieldId || "not configured"} not found`,
+    });
   }
 
   async function checkStatus(projectKey, statusName, label) {
