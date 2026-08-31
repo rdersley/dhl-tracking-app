@@ -21,7 +21,7 @@ permissions:
         - address: 'https://api-eu.dhl.com'
 
 app:
-  id: ari:cloud:ecosystem::app/86d70337-4eb0-48bc-945b-afc5f32ca0da
+  id: ari:cloud:ecosystem::app/f0ecb50d-1984-4439-a763-aac7fee40051
   runtime:
     name: nodejs22.x
     memoryMB: 256

@@ -1,4 +1,4 @@
-name: Register and Deploy Sandbox Clone
+name: Deploy Sandbox Clone
 
 on:
   push:
@@ -27,9 +27,5 @@ jobs:
           forge settings set usage-analytics false
       - name: Run tests
         run: npm test
-      - name: Register unlicensed sandbox clone
-        run: forge register "Delivery Manager Sandbox Test" --developer-space-id bb1f92fd-56a9-4352-a90a-2b705b43d6e0 --accept-terms
-      - name: Show sandbox app id
-        run: grep -A 5 '^app:' manifest.yml
       - name: Deploy sandbox clone to production
         run: forge deploy --environment production --non-interactive
