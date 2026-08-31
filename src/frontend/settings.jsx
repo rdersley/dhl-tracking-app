@@ -14,52 +14,78 @@ import ForgeReconciler, {
 } from "@forge/react";
 import { invoke } from "@forge/bridge";
 
+const UI_BUILD = "DM-SETTINGS-20260831-1";
 const sectionStyle = xcss({ padding: "space.200", borderRadius: "border.radius.200", backgroundColor: "elevation.surface" });
+
+const FALLBACK_CONFIG = {
+  sdProject: "SD",
+  hwProject: "HW",
+  sdSentStatus: "Sent to Hardware",
+  hwDispatchedStatus: "Dispatched",
+  sdDispatchedStatus: "Dispatched",
+  resolvedStatus: "Resolved",
+  trackingField: "customfield_10417",
+  dateSentField: "customfield_10433",
+  deliveryStatusField: "customfield_11952",
+  deliveryDateField: "customfield_10434",
+  signedForField: "customfield_10442",
+  lastDhlCheckField: "customfield_14400",
+  hwIssueType: "",
+  hwLinkType: "Relates",
+  commentsEnabled: true,
+  transitionsEnabled: true,
+  createEnabled: false,
+};
 
 function fieldOption(fields, value) {
   return fields.find((item) => item.value === value) || (value ? { label: value, value } : null);
 }
 
+function withTimeout(promise, label, timeoutMs = 12000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs)),
+  ]);
+}
+
 function App() {
-  const [config, setConfig] = useState(null);
+  const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [projects, setProjects] = useState([]);
   const [fields, setFields] = useState([]);
   const [validation, setValidation] = useState(null);
   const [message, setMessage] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [loadError, setLoadError] = useState(null);
+  const [configStatus, setConfigStatus] = useState("Loading saved settings…");
+  const [optionsStatus, setOptionsStatus] = useState("Loading Jira projects and fields…");
 
   useEffect(() => {
-    Promise.all([invoke("getConfig"), invoke("getOptions")])
-      .then(([saved, options]) => {
-        setConfig(saved);
-        setProjects(options.projects || []);
-        setFields(options.fields || []);
+    withTimeout(invoke("getConfig"), "Saved settings request")
+      .then((saved) => {
+        setConfig((current) => ({ ...current, ...(saved || {}) }));
+        setConfigStatus("Saved settings loaded successfully.");
       })
       .catch((error) => {
-        setLoadError(`Could not load Delivery Manager settings: ${String(error)}`);
+        setConfigStatus(`Saved settings could not be loaded: ${String(error)}`);
+      });
+
+    withTimeout(invoke("getOptions"), "Jira options request")
+      .then((options) => {
+        setProjects(options?.projects || []);
+        setFields(options?.fields || []);
+        setOptionsStatus(`Jira options loaded: ${options?.projects?.length || 0} projects, ${options?.fields?.length || 0} fields.`);
+      })
+      .catch((error) => {
+        setOptionsStatus(`Jira projects/fields could not be loaded: ${String(error)}`);
       });
   }, []);
-
-  if (loadError) {
-    return (
-      <Stack space="space.200">
-        <Heading as="h1">Delivery Manager settings</Heading>
-        <MessageBanner appearance="error">{loadError}</MessageBanner>
-        <Text>Refresh the page after the app has been upgraded. If this remains, the error above can be used to diagnose the backend call.</Text>
-      </Stack>
-    );
-  }
-
-  if (!config) return <Text>Loading Delivery Manager settings…</Text>;
 
   const patch = (key, value) => setConfig((current) => ({ ...current, [key]: value }));
 
   const save = async () => {
     setBusy(true);
     try {
-      const result = await invoke("saveConfig", { config });
-      setConfig(result.config);
+      const result = await withTimeout(invoke("saveConfig", { config }), "Save settings request");
+      setConfig((current) => ({ ...current, ...(result?.config || {}) }));
       setMessage({ appearance: "success", text: "Settings saved." });
     } catch (error) {
       setMessage({ appearance: "error", text: `Could not save settings: ${String(error)}` });
@@ -72,11 +98,11 @@ function App() {
     setBusy(true);
     setValidation(null);
     try {
-      const result = await invoke("validateConfig", { config });
+      const result = await withTimeout(invoke("validateConfig", { config }), "Validation request", 20000);
       setValidation(result);
       setMessage({
-        appearance: result.ok ? "success" : "warning",
-        text: result.ok ? "Configuration is valid and ready for sandbox testing." : "Configuration needs attention before testing.",
+        appearance: result?.ok ? "success" : "warning",
+        text: result?.ok ? "Configuration is valid and ready for sandbox testing." : "Configuration needs attention before testing.",
       });
     } catch (error) {
       setMessage({ appearance: "error", text: `Validation failed: ${String(error)}` });
@@ -86,7 +112,11 @@ function App() {
   };
 
   const projectSelect = (key) => (
-    <Select options={projects} value={projects.find((p) => p.value === config[key]) || { label: config[key], value: config[key] }} onChange={(option) => patch(key, option?.value || "")} />
+    <Select
+      options={projects}
+      value={projects.find((p) => p.value === config[key]) || (config[key] ? { label: config[key], value: config[key] } : null)}
+      onChange={(option) => patch(key, option?.value || "")}
+    />
   );
 
   const fieldSelect = (key) => (
@@ -98,6 +128,15 @@ function App() {
       <Box>
         <Heading as="h1">Delivery Manager settings</Heading>
         <Text>Configure DHL tracking and the SD ↔ Hardware workflow. Validate everything before enabling automation.</Text>
+        <Text>UI build: {UI_BUILD}</Text>
+      </Box>
+
+      <Box xcss={sectionStyle}>
+        <Stack space="space.100">
+          <Heading as="h2">Connection status</Heading>
+          <Text>{configStatus}</Text>
+          <Text>{optionsStatus}</Text>
+        </Stack>
       </Box>
 
       {message && <MessageBanner appearance={message.appearance}>{message.text}</MessageBanner>}
@@ -150,7 +189,7 @@ function App() {
           <Heading as="h2">Validation</Heading>
           <Text>Validation checks that projects, fields and statuses exist and are accessible to the app.</Text>
           <Box><Button appearance="primary" onClick={validate} isDisabled={busy}>Validate configuration</Button> <Button onClick={save} isDisabled={busy}>Save settings</Button></Box>
-          {validation && validation.checks.map((check) => (
+          {validation?.checks?.map((check) => (
             <Text key={check.key}>{check.ok ? "✓" : "✗"} {check.key}: {check.message}</Text>
           ))}
         </Stack>
