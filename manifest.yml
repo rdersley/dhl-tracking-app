@@ -2,7 +2,7 @@ modules:
   scheduledTrigger:
     - key: dhl-tracking-scheduler
       function: main
-      interval: fiveMinute
+      interval: hour
     - key: hardware-handover-scheduler
       function: hardware-sync
       interval: fiveMinute
