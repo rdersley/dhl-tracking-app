@@ -1,4 +1,9 @@
 import api, { route } from "@forge/api";
+import {
+  normalise,
+  getLinkedIssueKey,
+  buildDispatchRepair,
+} from "./hardware-core.mjs";
 
 const CONFIG = {
   sdProject: process.env.HW_SD_PROJECT_KEY || "SD",
@@ -12,41 +17,6 @@ const CONFIG = {
   hwIssueType: process.env.HW_ISSUE_TYPE || "",
   maxResults: Number(process.env.HW_SYNC_MAX_RESULTS || 100),
 };
-
-function normalise(value) {
-  return String(value ?? "").trim().toLowerCase();
-}
-
-export function getLinkedIssueKey(issue, projectKey) {
-  const prefix = `${String(projectKey).toUpperCase()}-`;
-  for (const link of issue?.fields?.issuelinks ?? []) {
-    const candidates = [link.inwardIssue, link.outwardIssue].filter(Boolean);
-    const match = candidates.find((candidate) =>
-      String(candidate.key || "").toUpperCase().startsWith(prefix)
-    );
-    if (match) return match.key;
-  }
-  return null;
-}
-
-export function buildDispatchRepair(hwIssue, sdIssue, config = CONFIG) {
-  const tracking = hwIssue?.fields?.[config.trackingField] ?? null;
-  const dateSent = hwIssue?.fields?.[config.dateSentField] ?? null;
-  if (!tracking || !dateSent) return { ready: false, fields: {}, transition: false };
-
-  const fields = {};
-  if (sdIssue?.fields?.[config.trackingField] !== tracking) {
-    fields[config.trackingField] = tracking;
-  }
-  if (sdIssue?.fields?.[config.dateSentField] !== dateSent) {
-    fields[config.dateSentField] = dateSent;
-  }
-
-  const transition =
-    normalise(sdIssue?.fields?.status?.name) !== normalise(config.sdDispatchedStatus);
-
-  return { ready: true, fields, transition };
-}
 
 async function search(jql, fields) {
   const response = await api.asApp().requestJira(
@@ -86,10 +56,12 @@ async function transitionTo(issueKey, targetStatus) {
     { method: "GET", headers: { Accept: "application/json" } }
   );
   if (!transitionsResponse.ok) return false;
+
   const transitions = (await transitionsResponse.json()).transitions ?? [];
   const target = transitions.find(
     (item) => normalise(item?.to?.name) === normalise(targetStatus)
   );
+
   if (!target) {
     console.log(`HW-SYNC: ${issueKey} has no transition to ${targetStatus}`);
     return false;
@@ -119,8 +91,21 @@ async function addInternalComment(issueKey, text) {
 }
 
 async function reconcileDispatchedHardware() {
-  const fields = [CONFIG.trackingField, CONFIG.dateSentField, "issuelinks", "status", "summary"];
-  const jql = `project = ${CONFIG.hwProject} AND status = "${CONFIG.hwDispatchedStatus}" AND "Tracking Number" IS NOT EMPTY AND "Date Sent" IS NOT EMPTY ORDER BY updated ASC`;
+  const fields = [
+    CONFIG.trackingField,
+    CONFIG.dateSentField,
+    "issuelinks",
+    "status",
+    "summary",
+  ];
+
+  const jql =
+    `project = ${CONFIG.hwProject} ` +
+    `AND status = "${CONFIG.hwDispatchedStatus}" ` +
+    `AND "Tracking Number" IS NOT EMPTY ` +
+    `AND "Date Sent[Date]" IS NOT EMPTY ` +
+    `ORDER BY updated ASC`;
+
   const hwIssues = await search(jql, fields);
   let repaired = 0;
 
@@ -131,17 +116,27 @@ async function reconcileDispatchedHardware() {
       continue;
     }
 
-    const sdIssue = await getIssue(sdKey, [CONFIG.trackingField, CONFIG.dateSentField, "status"]);
+    const sdIssue = await getIssue(sdKey, [
+      CONFIG.trackingField,
+      CONFIG.dateSentField,
+      "status",
+    ]);
     if (!sdIssue) continue;
 
-    const repair = buildDispatchRepair(hwIssue, sdIssue);
+    const repair = buildDispatchRepair(hwIssue, sdIssue, CONFIG);
     if (!repair.ready) continue;
 
     const fieldsOk = await updateFields(sdKey, repair.fields);
     let transitionOk = true;
-    if (repair.transition) transitionOk = await transitionTo(sdKey, CONFIG.sdDispatchedStatus);
+    if (repair.transition) {
+      transitionOk = await transitionTo(sdKey, CONFIG.sdDispatchedStatus);
+    }
 
-    if (fieldsOk && transitionOk && (Object.keys(repair.fields).length || repair.transition)) {
+    if (
+      fieldsOk &&
+      transitionOk &&
+      (Object.keys(repair.fields).length || repair.transition)
+    ) {
       repaired += 1;
       await addInternalComment(
         sdKey,
@@ -156,11 +151,16 @@ async function reconcileDispatchedHardware() {
 
 async function createMissingHardwareTickets() {
   if (!CONFIG.createEnabled) {
-    console.log("HW-SYNC: automatic HW ticket creation is disabled until mapping is verified");
+    console.log(
+      "HW-SYNC: automatic HW ticket creation is disabled until mapping is verified"
+    );
     return { checked: 0, created: 0 };
   }
+
   if (!CONFIG.hwIssueType) {
-    console.log("HW-SYNC: HW_CREATE_ENABLED=true but HW_ISSUE_TYPE is not configured");
+    console.log(
+      "HW-SYNC: HW_CREATE_ENABLED=true but HW_ISSUE_TYPE is not configured"
+    );
     return { checked: 0, created: 0 };
   }
 
@@ -180,17 +180,21 @@ async function createMissingHardwareTickets() {
         fields: {
           project: { key: CONFIG.hwProject },
           issuetype: { name: CONFIG.hwIssueType },
-          summary: sdIssue.fields?.summary || `Hardware request for ${sdIssue.key}`,
+          summary:
+            sdIssue.fields?.summary || `Hardware request for ${sdIssue.key}`,
           description: sdIssue.fields?.description ?? undefined,
         },
       }),
     });
+
     if (!response.ok) {
-      console.log(`HW-SYNC: failed creating HW issue for ${sdIssue.key}: ${await response.text()}`);
+      console.log(
+        `HW-SYNC: failed creating HW issue for ${sdIssue.key}: ${await response.text()}`
+      );
       continue;
     }
-    const createdIssue = await response.json();
 
+    const createdIssue = await response.json();
     const linkResponse = await api.asApp().requestJira(route`/rest/api/3/issueLink`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -202,12 +206,17 @@ async function createMissingHardwareTickets() {
     });
 
     if (!linkResponse.ok) {
-      console.log(`HW-SYNC: created ${createdIssue.key} but linking to ${sdIssue.key} failed`);
+      console.log(
+        `HW-SYNC: created ${createdIssue.key} but linking to ${sdIssue.key} failed`
+      );
       continue;
     }
 
     created += 1;
-    await addInternalComment(sdIssue.key, `Hardware ticket ${createdIssue.key} was created and linked automatically.`);
+    await addInternalComment(
+      sdIssue.key,
+      `Hardware ticket ${createdIssue.key} was created and linked automatically.`
+    );
   }
 
   return { checked: sdIssues.length, created };
@@ -215,10 +224,16 @@ async function createMissingHardwareTickets() {
 
 export async function runHardwareSync() {
   console.log("HW-SYNC: starting hardware handover reconciliation");
+
   try {
     const dispatch = await reconcileDispatchedHardware();
     const creation = await createMissingHardwareTickets();
-    console.log(`HW-SYNC: complete; dispatched checked=${dispatch.checked}, repaired=${dispatch.repaired}, sent-to-hardware checked=${creation.checked}, created=${creation.created}`);
+
+    console.log(
+      `HW-SYNC: complete; dispatched checked=${dispatch.checked}, ` +
+      `repaired=${dispatch.repaired}, sent-to-hardware checked=${creation.checked}, ` +
+      `created=${creation.created}`
+    );
   } catch (error) {
     console.log(`HW-SYNC: failed: ${String(error)}`);
   }
