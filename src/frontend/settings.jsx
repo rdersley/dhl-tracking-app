@@ -2,9 +2,6 @@ import React, { useEffect, useState } from "react";
 import ForgeReconciler, {
   Box,
   Button,
-  Checkbox,
-  Form,
-  FormSection,
   Heading,
   Label,
   MessageBanner,
@@ -30,14 +27,29 @@ function App() {
   const [validation, setValidation] = useState(null);
   const [message, setMessage] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState(null);
 
   useEffect(() => {
-    Promise.all([invoke("getConfig"), invoke("getOptions")]).then(([saved, options]) => {
-      setConfig(saved);
-      setProjects(options.projects || []);
-      setFields(options.fields || []);
-    });
+    Promise.all([invoke("getConfig"), invoke("getOptions")])
+      .then(([saved, options]) => {
+        setConfig(saved);
+        setProjects(options.projects || []);
+        setFields(options.fields || []);
+      })
+      .catch((error) => {
+        setLoadError(`Could not load Delivery Manager settings: ${String(error)}`);
+      });
   }, []);
+
+  if (loadError) {
+    return (
+      <Stack space="space.200">
+        <Heading as="h1">Delivery Manager settings</Heading>
+        <MessageBanner appearance="error">{loadError}</MessageBanner>
+        <Text>Refresh the page after the app has been upgraded. If this remains, the error above can be used to diagnose the backend call.</Text>
+      </Stack>
+    );
+  }
 
   if (!config) return <Text>Loading Delivery Manager settings…</Text>;
 
