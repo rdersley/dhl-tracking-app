@@ -1,4 +1,4 @@
-import { storage } from "@forge/api";
+import { kvs } from "@forge/kvs";
 
 export const CONFIG_KEY = "delivery-manager-config-v1";
 
@@ -27,7 +27,7 @@ export const DEFAULT_CONFIG = {
 };
 
 export async function getDeliveryManagerConfig() {
-  const saved = (await storage.get(CONFIG_KEY)) || {};
+  const saved = (await kvs.get(CONFIG_KEY)) || {};
   return { ...DEFAULT_CONFIG, ...saved, createEnabled: saved.createEnabled === true };
 }
 
@@ -42,6 +42,6 @@ export async function saveDeliveryManagerConfig(config) {
     clientValues: Array.isArray(config?.clientValues) ? config.clientValues.filter(Boolean) : [],
     maxResults: Math.max(1, Math.min(100, Number(config?.maxResults || 100))),
   };
-  await storage.set(CONFIG_KEY, clean);
+  await kvs.set(CONFIG_KEY, clean);
   return clean;
 }
