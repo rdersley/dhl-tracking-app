@@ -17,15 +17,54 @@ async function jiraJson(path) {
 
 function uniqueStatusOptions(data) {
   const names = new Set();
-  for (const issueType of data || []) {
-    for (const status of issueType.statuses || []) {
-      const name = String(status.name || "").trim();
-      if (name) names.add(name);
+  const rows = Array.isArray(data) ? data : Array.isArray(data?.values) ? data.values : [];
+
+  for (const row of rows) {
+    if (Array.isArray(row?.statuses)) {
+      for (const status of row.statuses) {
+        const name = String(status?.name || "").trim();
+        if (name) names.add(name);
+      }
+      continue;
     }
+
+    const name = String(row?.name || "").trim();
+    if (name) names.add(name);
   }
+
   return [...names]
     .sort((a, b) => a.localeCompare(b))
     .map((name) => ({ label: name, value: name }));
+}
+
+async function loadProjectStatuses(projectKey) {
+  const attempts = [];
+
+  const v3 = await jiraJson(route`/rest/api/3/project/${projectKey}/statuses`);
+  if (v3.ok) {
+    const statuses = uniqueStatusOptions(v3.data);
+    attempts.push(`v3:${statuses.length}`);
+    if (statuses.length) return { ok: true, statuses, source: "v3 project statuses", attempts };
+  } else {
+    attempts.push(`v3 HTTP ${v3.status}`);
+  }
+
+  const v2 = await jiraJson(route`/rest/api/2/project/${projectKey}/statuses`);
+  if (v2.ok) {
+    const statuses = uniqueStatusOptions(v2.data);
+    attempts.push(`v2:${statuses.length}`);
+    if (statuses.length) return { ok: true, statuses, source: "v2 project statuses", attempts };
+  } else {
+    attempts.push(`v2 HTTP ${v2.status}`);
+  }
+
+  return {
+    ok: false,
+    statuses: [],
+    source: "none",
+    attempts,
+    error: `Jira returned no usable statuses for ${projectKey} (${attempts.join(", ")})`,
+  };
 }
 
 resolver.define("getConfig", async () => getDeliveryManagerConfig());
@@ -59,10 +98,8 @@ resolver.define("getProjectStatuses", async ({ payload }) => {
   const projectKey = String(payload?.projectKey || "").trim();
   if (!projectKey) return { ok: false, projectKey: "", statuses: [], error: "No project selected" };
 
-  const result = await jiraJson(route`/rest/api/3/project/${projectKey}/statuses`);
-  return result.ok
-    ? { ok: true, projectKey, statuses: uniqueStatusOptions(result.data) }
-    : { ok: false, projectKey, statuses: [], error: `Could not load statuses for ${projectKey}` };
+  const result = await loadProjectStatuses(projectKey);
+  return { projectKey, ...result };
 });
 
 resolver.define("validateConfig", async ({ payload }) => {
@@ -106,12 +143,14 @@ resolver.define("validateConfig", async ({ payload }) => {
       checks.push({ key: label, ok: false, message: "Not configured" });
       return;
     }
-    const result = await jiraJson(route`/rest/api/3/project/${projectKey}/statuses`);
-    const names = result.ok
-      ? (result.data || []).flatMap((type) => type.statuses || []).map((s) => String(s.name || "").trim().toLowerCase())
-      : [];
+    const result = await loadProjectStatuses(projectKey);
+    const names = result.statuses.map((s) => String(s.value || "").trim().toLowerCase());
     const found = names.includes(String(statusName).trim().toLowerCase());
-    checks.push({ key: label, ok: found, message: found ? `Found ${statusName}` : `Status ${statusName} not found in ${projectKey}` });
+    checks.push({
+      key: label,
+      ok: found,
+      message: found ? `Found ${statusName}` : result.error || `Status ${statusName} not found in ${projectKey}`,
+    });
   }
 
   if (sdProject) {
