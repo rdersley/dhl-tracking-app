@@ -30,3 +30,5 @@ jobs:
           forge settings set default-environment development
       - name: Deploy sandbox test app
         run: forge deploy --environment production --non-interactive --approve MAJOR_VERSION_RULE
+      - name: Upgrade Nuvriqo installation to major v3
+        run: forge install --site https://nuvriqo.atlassian.net --product jira --major-version 3 --environment production --non-interactive
