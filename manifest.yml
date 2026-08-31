@@ -1,10 +1,10 @@
 modules:
   jira:adminPage:
-    - key: delivery-manager-settings
-      resource: delivery-manager-settings-ui
+    - key: dm-settings
+      resource: dm-settings-ui
       render: native
       resolver:
-        function: delivery-manager-settings-resolver
+        function: dm-settings-resolver
       title: Delivery Manager
       useAsConfig: true
 
@@ -17,11 +17,11 @@ modules:
     - key: delivery-manager
       handler: scheduler.runCombinedScheduler
       timeoutSeconds: 180
-    - key: delivery-manager-settings-resolver
+    - key: dm-settings-resolver
       handler: settings-resolver.handler
 
 resources:
-  - key: delivery-manager-settings-ui
+  - key: dm-settings-ui
     path: src/frontend/settings.jsx
 
 permissions:
