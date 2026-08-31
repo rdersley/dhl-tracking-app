@@ -2,11 +2,16 @@ modules:
   scheduledTrigger:
     - key: dhl-tracking-scheduler
       function: main
-      interval: fiveMinute  # every hour
+      interval: fiveMinute
+    - key: hardware-handover-scheduler
+      function: hardware-sync
+      interval: fiveMinute
 
   function:
     - key: main
       handler: index.run
+    - key: hardware-sync
+      handler: hardware-sync.runHardwareSync
 
 permissions:
   scopes:
@@ -17,7 +22,7 @@ permissions:
   external:
     fetch:
       backend:
-        - address: 'https://api-eu.dhl.com'   # DHL tracking API host
+        - address: 'https://api-eu.dhl.com'
 
 app:
   id: ari:cloud:ecosystem::app/86d70337-4eb0-48bc-945b-afc5f32ca0da
