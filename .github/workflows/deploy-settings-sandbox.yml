@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: 22
       - name: Install dependencies
-        run: npm ci
+        run: npm install
       - name: Run tests
         run: npm test
       - name: Install Forge CLI
@@ -29,6 +29,6 @@ jobs:
           forge settings set usage-analytics false
           forge settings set default-environment development
       - name: Forge lint
-        run: forge lint
+        run: forge lint --approve MAJOR_VERSION_RULE
       - name: Deploy sandbox test app
-        run: forge deploy --environment production --non-interactive
+        run: forge deploy --environment production --non-interactive --approve MAJOR_VERSION_RULE
