@@ -1,4 +1,4 @@
-name: Diagnose RetailInMotion Forge Environment
+name: Deploy RetailInMotion
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  diagnose:
+  deploy:
     runs-on: ubuntu-latest
     environment: nuvriqo-sandbox
     env:
@@ -20,19 +20,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install Forge CLI
+      - name: Install dependencies and Forge CLI
         shell: bash
         run: |
+          if [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; fi
           npm install --global @forge/cli
           forge settings set usage-analytics false
-      - name: List Forge environments
-        shell: bash
-        run: forge environments list
-      - name: Check development installations
+          forge settings set default-environment development
+      - name: Run tests
+        run: npm test
+      - name: Forge lint
         shell: bash
         run: |
-          forge settings set default-environment development
-          forge install list --environment development || true
-      - name: Check production installations
-        shell: bash
-        run: forge install list --environment production || true
+          set +e
+          forge lint 2>&1 | tee /tmp/forge-lint.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ] && grep -Eq '\(0 errors,' /tmp/forge-lint.log; then exit 0; fi
+          exit "$status"
+      - name: Deploy Forge app
+        run: forge deploy --environment development --non-interactive
+      - name: Upgrade RetailInMotion installation
+        run: forge install --upgrade --site retailinmotion.atlassian.net --product jira --environment development --confirm-scopes --non-interactive
