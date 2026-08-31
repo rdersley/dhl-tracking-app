@@ -14,7 +14,7 @@ import ForgeReconciler, {
 } from "@forge/react";
 import { invoke } from "@forge/bridge";
 
-const UI_BUILD = "DM-SETTINGS-20260831-2";
+const UI_BUILD = "DM-SETTINGS-20260831-3";
 const sectionStyle = xcss({ padding: "space.200", borderRadius: "border.radius.200", backgroundColor: "elevation.surface" });
 
 const FALLBACK_CONFIG = {
@@ -94,9 +94,19 @@ function App() {
         if (cancelled) return;
         setSdStatuses(sdResult?.statuses || []);
         setHwStatuses(hwResult?.statuses || []);
+
         const sdCount = sdResult?.statuses?.length || 0;
         const hwCount = hwResult?.statuses?.length || 0;
-        setStatusStatus(`Project statuses loaded: ${sdCount} SD statuses, ${hwCount} HW statuses.`);
+        const problems = [
+          sdResult?.ok ? null : `SD: ${sdResult?.error || "could not load"}`,
+          hwResult?.ok ? null : `HW: ${hwResult?.error || "could not load"}`,
+        ].filter(Boolean);
+
+        setStatusStatus(
+          problems.length
+            ? `Status loading issue — ${problems.join(" | ")}`
+            : `Project statuses loaded: ${sdCount} SD statuses, ${hwCount} HW statuses.`
+        );
       })
       .catch((error) => {
         if (!cancelled) setStatusStatus(`Project statuses could not be loaded: ${String(error)}`);
@@ -140,26 +150,19 @@ function App() {
   };
 
   const projectSelect = (key) => (
-    <Select
-      options={projects}
-      value={optionFor(projects, config[key])}
-      onChange={(option) => patch(key, option?.value || "")}
-    />
+    <Select options={projects} value={optionFor(projects, config[key])} onChange={(option) => patch(key, option?.value || "")} />
   );
 
   const fieldSelect = (key) => (
-    <Select
-      options={fields}
-      value={optionFor(fields, config[key])}
-      onChange={(option) => patch(key, option?.value || "")}
-    />
+    <Select options={fields} value={optionFor(fields, config[key])} onChange={(option) => patch(key, option?.value || "")} />
   );
 
-  const statusSelect = (key, options) => (
+  const statusSelect = (key, options, loadingText) => (
     <Select
       options={options}
       value={optionFor(options, config[key])}
       onChange={(option) => patch(key, option?.value || "")}
+      placeholder={options.length ? "Select a Jira status" : loadingText}
     />
   );
 
@@ -185,12 +188,12 @@ function App() {
       <Box xcss={sectionStyle}>
         <Stack space="space.200">
           <Heading as="h2">Projects & workflow</Heading>
-          <Label labelFor="sd-project">Service project</Label>{projectSelect("sdProject")}
-          <Label labelFor="hw-project">Hardware project</Label>{projectSelect("hwProject")}
-          <Label>SD status that triggers hardware handover</Label>{statusSelect("sdSentStatus", sdStatuses)}
-          <Label>HW dispatched status</Label>{statusSelect("hwDispatchedStatus", hwStatuses)}
-          <Label>SD dispatched status</Label>{statusSelect("sdDispatchedStatus", sdStatuses)}
-          <Label>SD final resolved status</Label>{statusSelect("resolvedStatus", sdStatuses)}
+          <Label>Service project</Label>{projectSelect("sdProject")}
+          <Label>Hardware project</Label>{projectSelect("hwProject")}
+          <Label>SD status that triggers hardware handover</Label>{statusSelect("sdSentStatus", sdStatuses, "No SD statuses loaded")}
+          <Label>HW dispatched status</Label>{statusSelect("hwDispatchedStatus", hwStatuses, "No HW statuses loaded")}
+          <Label>SD dispatched status</Label>{statusSelect("sdDispatchedStatus", sdStatuses, "No SD statuses loaded")}
+          <Label>SD final resolved status</Label>{statusSelect("resolvedStatus", sdStatuses, "No SD statuses loaded")}
         </Stack>
       </Box>
 
