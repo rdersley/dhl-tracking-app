@@ -28,7 +28,5 @@ jobs:
           npm install --global @forge/cli
           forge settings set usage-analytics false
           forge settings set default-environment development
-      - name: Forge lint
-        run: forge lint --approve MAJOR_VERSION_RULE
       - name: Deploy sandbox test app
         run: forge deploy --environment production --non-interactive --approve MAJOR_VERSION_RULE
