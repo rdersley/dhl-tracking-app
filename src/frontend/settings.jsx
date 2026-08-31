@@ -14,7 +14,7 @@ import ForgeReconciler, {
 } from "@forge/react";
 import { invoke } from "@forge/bridge";
 
-const UI_BUILD = "DM-SETTINGS-20260831-1";
+const UI_BUILD = "DM-SETTINGS-20260831-2";
 const sectionStyle = xcss({ padding: "space.200", borderRadius: "border.radius.200", backgroundColor: "elevation.surface" });
 
 const FALLBACK_CONFIG = {
@@ -37,8 +37,8 @@ const FALLBACK_CONFIG = {
   createEnabled: false,
 };
 
-function fieldOption(fields, value) {
-  return fields.find((item) => item.value === value) || (value ? { label: value, value } : null);
+function optionFor(options, value) {
+  return options.find((item) => item.value === value) || (value ? { label: value, value } : null);
 }
 
 function withTimeout(promise, label, timeoutMs = 12000) {
@@ -52,11 +52,14 @@ function App() {
   const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [projects, setProjects] = useState([]);
   const [fields, setFields] = useState([]);
+  const [sdStatuses, setSdStatuses] = useState([]);
+  const [hwStatuses, setHwStatuses] = useState([]);
   const [validation, setValidation] = useState(null);
   const [message, setMessage] = useState(null);
   const [busy, setBusy] = useState(false);
   const [configStatus, setConfigStatus] = useState("Loading saved settings…");
   const [optionsStatus, setOptionsStatus] = useState("Loading Jira projects and fields…");
+  const [statusStatus, setStatusStatus] = useState("Loading project statuses…");
 
   useEffect(() => {
     withTimeout(invoke("getConfig"), "Saved settings request")
@@ -78,6 +81,31 @@ function App() {
         setOptionsStatus(`Jira projects/fields could not be loaded: ${String(error)}`);
       });
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setStatusStatus("Loading project statuses…");
+
+    Promise.all([
+      withTimeout(invoke("getProjectStatuses", { projectKey: config.sdProject }), "Service project statuses"),
+      withTimeout(invoke("getProjectStatuses", { projectKey: config.hwProject }), "Hardware project statuses"),
+    ])
+      .then(([sdResult, hwResult]) => {
+        if (cancelled) return;
+        setSdStatuses(sdResult?.statuses || []);
+        setHwStatuses(hwResult?.statuses || []);
+        const sdCount = sdResult?.statuses?.length || 0;
+        const hwCount = hwResult?.statuses?.length || 0;
+        setStatusStatus(`Project statuses loaded: ${sdCount} SD statuses, ${hwCount} HW statuses.`);
+      })
+      .catch((error) => {
+        if (!cancelled) setStatusStatus(`Project statuses could not be loaded: ${String(error)}`);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [config.sdProject, config.hwProject]);
 
   const patch = (key, value) => setConfig((current) => ({ ...current, [key]: value }));
 
@@ -114,13 +142,25 @@ function App() {
   const projectSelect = (key) => (
     <Select
       options={projects}
-      value={projects.find((p) => p.value === config[key]) || (config[key] ? { label: config[key], value: config[key] } : null)}
+      value={optionFor(projects, config[key])}
       onChange={(option) => patch(key, option?.value || "")}
     />
   );
 
   const fieldSelect = (key) => (
-    <Select options={fields} value={fieldOption(fields, config[key])} onChange={(option) => patch(key, option?.value || "")} />
+    <Select
+      options={fields}
+      value={optionFor(fields, config[key])}
+      onChange={(option) => patch(key, option?.value || "")}
+    />
+  );
+
+  const statusSelect = (key, options) => (
+    <Select
+      options={options}
+      value={optionFor(options, config[key])}
+      onChange={(option) => patch(key, option?.value || "")}
+    />
   );
 
   return (
@@ -136,6 +176,7 @@ function App() {
           <Heading as="h2">Connection status</Heading>
           <Text>{configStatus}</Text>
           <Text>{optionsStatus}</Text>
+          <Text>{statusStatus}</Text>
         </Stack>
       </Box>
 
@@ -146,21 +187,17 @@ function App() {
           <Heading as="h2">Projects & workflow</Heading>
           <Label labelFor="sd-project">Service project</Label>{projectSelect("sdProject")}
           <Label labelFor="hw-project">Hardware project</Label>{projectSelect("hwProject")}
-          <Label labelFor="sd-sent">SD status that triggers hardware handover</Label>
-          <Textfield id="sd-sent" value={config.sdSentStatus} onChange={(e) => patch("sdSentStatus", e.target.value)} />
-          <Label labelFor="hw-dispatched">HW dispatched status</Label>
-          <Textfield id="hw-dispatched" value={config.hwDispatchedStatus} onChange={(e) => patch("hwDispatchedStatus", e.target.value)} />
-          <Label labelFor="sd-dispatched">SD dispatched status</Label>
-          <Textfield id="sd-dispatched" value={config.sdDispatchedStatus} onChange={(e) => patch("sdDispatchedStatus", e.target.value)} />
-          <Label labelFor="resolved">SD final resolved status</Label>
-          <Textfield id="resolved" value={config.resolvedStatus} onChange={(e) => patch("resolvedStatus", e.target.value)} />
+          <Label>SD status that triggers hardware handover</Label>{statusSelect("sdSentStatus", sdStatuses)}
+          <Label>HW dispatched status</Label>{statusSelect("hwDispatchedStatus", hwStatuses)}
+          <Label>SD dispatched status</Label>{statusSelect("sdDispatchedStatus", sdStatuses)}
+          <Label>SD final resolved status</Label>{statusSelect("resolvedStatus", sdStatuses)}
         </Stack>
       </Box>
 
       <Box xcss={sectionStyle}>
         <Stack space="space.200">
           <Heading as="h2">Jira fields</Heading>
-          <Text>These are the fields Delivery Manager will use for DHL and hardware dispatch data.</Text>
+          <Text>The dropdowns show Jira field names; Delivery Manager stores the underlying field IDs safely.</Text>
           <Label>Tracking Number</Label>{fieldSelect("trackingField")}
           <Label>Date Sent</Label>{fieldSelect("dateSentField")}
           <Label>Delivery Status</Label>{fieldSelect("deliveryStatusField")}
