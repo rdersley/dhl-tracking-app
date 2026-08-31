@@ -6,7 +6,6 @@ modules:
       resolver:
         function: dm-settings-resolver
       title: Delivery Manager
-      useAsConfig: true
 
   scheduledTrigger:
     - key: delivery-manager-scheduler
