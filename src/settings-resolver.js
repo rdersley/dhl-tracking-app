@@ -9,97 +9,64 @@ async function jiraJson(path) {
     method: "GET",
     headers: { Accept: "application/json" },
   });
-  if (!response.ok) {
-    return { ok: false, status: response.status, error: await response.text() };
-  }
+  if (!response.ok) return { ok: false, status: response.status, error: await response.text() };
   return { ok: true, data: await response.json() };
 }
 
 function uniqueStatusOptions(data) {
   const names = new Set();
   const rows = Array.isArray(data) ? data : Array.isArray(data?.values) ? data.values : [];
-
   for (const row of rows) {
     if (Array.isArray(row?.statuses)) {
       for (const status of row.statuses) {
         const name = String(status?.name || "").trim();
         if (name) names.add(name);
       }
-      continue;
+    } else {
+      const name = String(row?.name || "").trim();
+      if (name) names.add(name);
     }
-
-    const name = String(row?.name || "").trim();
-    if (name) names.add(name);
   }
-
-  return [...names]
-    .sort((a, b) => a.localeCompare(b))
-    .map((name) => ({ label: name, value: name }));
+  return [...names].sort((a, b) => a.localeCompare(b)).map((name) => ({ label: name, value: name }));
 }
 
 async function loadProjectStatuses(projectKey) {
   const attempts = [];
-
   const v3 = await jiraJson(route`/rest/api/3/project/${projectKey}/statuses`);
   if (v3.ok) {
     const statuses = uniqueStatusOptions(v3.data);
     attempts.push(`v3:${statuses.length}`);
     if (statuses.length) return { ok: true, statuses, source: "v3 project statuses", attempts };
-  } else {
-    attempts.push(`v3 HTTP ${v3.status}`);
-  }
+  } else attempts.push(`v3 HTTP ${v3.status}`);
 
   const v2 = await jiraJson(route`/rest/api/2/project/${projectKey}/statuses`);
   if (v2.ok) {
     const statuses = uniqueStatusOptions(v2.data);
     attempts.push(`v2:${statuses.length}`);
     if (statuses.length) return { ok: true, statuses, source: "v2 project statuses", attempts };
-  } else {
-    attempts.push(`v2 HTTP ${v2.status}`);
-  }
+  } else attempts.push(`v2 HTTP ${v2.status}`);
 
-  return {
-    ok: false,
-    statuses: [],
-    source: "none",
-    attempts,
-    error: `Jira returned no usable statuses for ${projectKey} (${attempts.join(", ")})`,
-  };
+  return { ok: false, statuses: [], source: "none", attempts, error: `Jira returned no usable statuses for ${projectKey} (${attempts.join(", ")})` };
 }
 
 resolver.define("getConfig", async () => getDeliveryManagerConfig());
-
-resolver.define("saveConfig", async ({ payload }) => {
-  const config = await saveDeliveryManagerConfig(payload?.config || {});
-  return { ok: true, config };
-});
+resolver.define("saveConfig", async ({ payload }) => ({ ok: true, config: await saveDeliveryManagerConfig(payload?.config || {}) }));
 
 resolver.define("getOptions", async () => {
   const [projectsResult, fieldsResult] = await Promise.all([
     jiraJson(route`/rest/api/3/project/search?maxResults=100`),
     jiraJson(route`/rest/api/3/field`),
   ]);
-
   return {
-    projects: projectsResult.ok
-      ? (projectsResult.data?.values || [])
-          .map((p) => ({ label: `${p.key} — ${p.name}`, value: p.key }))
-          .sort((a, b) => a.label.localeCompare(b.label))
-      : [],
-    fields: fieldsResult.ok
-      ? (fieldsResult.data || [])
-          .map((f) => ({ label: String(f.name || f.id), value: f.id }))
-          .sort((a, b) => a.label.localeCompare(b.label))
-      : [],
+    projects: projectsResult.ok ? (projectsResult.data?.values || []).map((p) => ({ label: `${p.key} — ${p.name}`, value: p.key })).sort((a, b) => a.label.localeCompare(b.label)) : [],
+    fields: fieldsResult.ok ? (fieldsResult.data || []).map((f) => ({ label: String(f.name || f.id), value: f.id })).sort((a, b) => a.label.localeCompare(b.label)) : [],
   };
 });
 
 resolver.define("getProjectStatuses", async ({ payload }) => {
   const projectKey = String(payload?.projectKey || "").trim();
   if (!projectKey) return { ok: false, projectKey: "", statuses: [], error: "No project selected" };
-
-  const result = await loadProjectStatuses(projectKey);
-  return { projectKey, ...result };
+  return { projectKey, ...(await loadProjectStatuses(projectKey)) };
 });
 
 resolver.define("validateConfig", async ({ payload }) => {
@@ -109,33 +76,31 @@ resolver.define("validateConfig", async ({ payload }) => {
   async function checkProject(key, label) {
     if (!key) {
       checks.push({ key: label, ok: false, message: "Not configured" });
-      return null;
+      return false;
     }
     const result = await jiraJson(route`/rest/api/3/project/${key}`);
     checks.push({ key: label, ok: result.ok, message: result.ok ? `Found ${result.data?.name || key}` : `Project ${key} not found or inaccessible` });
-    return result.ok ? result.data : null;
+    return result.ok;
   }
 
-  const sdProject = await checkProject(config.sdProject, "Service project");
-  const hwProject = await checkProject(config.hwProject, "Hardware project");
+  const sdOk = await checkProject(config.sdProject, "Service project");
+  const hwOk = await checkProject(config.hwProject, "Hardware project");
 
   const fieldsResult = await jiraJson(route`/rest/api/3/field`);
   const fields = fieldsResult.ok ? fieldsResult.data || [] : [];
   const fieldNamesById = new Map(fields.map((f) => [f.id, f.name || f.id]));
-  for (const [label, fieldId] of [
+  const requiredFields = [
     ["Tracking Number", config.trackingField],
     ["Date Sent", config.dateSentField],
     ["Delivery Status", config.deliveryStatusField],
     ["Date Delivered", config.deliveryDateField],
     ["Signed For", config.signedForField],
     ["Last DHL Check", config.lastDhlCheckField],
-  ]) {
+  ];
+  if (config.clientRestrictionEnabled) requiredFields.push(["Client restriction field", config.clientField]);
+  for (const [label, fieldId] of requiredFields) {
     const fieldName = fieldNamesById.get(fieldId);
-    checks.push({
-      key: label,
-      ok: !!fieldName,
-      message: fieldName ? `Found ${fieldName}` : `Field ${fieldId || "not configured"} not found`,
-    });
+    checks.push({ key: label, ok: !!fieldName, message: fieldName ? `Found ${fieldName}` : `Field ${fieldId || "not configured"} not found` });
   }
 
   async function checkStatus(projectKey, statusName, label) {
@@ -144,30 +109,30 @@ resolver.define("validateConfig", async ({ payload }) => {
       return;
     }
     const result = await loadProjectStatuses(projectKey);
-    const names = result.statuses.map((s) => String(s.value || "").trim().toLowerCase());
-    const found = names.includes(String(statusName).trim().toLowerCase());
-    checks.push({
-      key: label,
-      ok: found,
-      message: found ? `Found ${statusName}` : result.error || `Status ${statusName} not found in ${projectKey}`,
-    });
+    const found = result.statuses.some((s) => String(s.value).trim().toLowerCase() === String(statusName).trim().toLowerCase());
+    checks.push({ key: label, ok: found, message: found ? `Found ${statusName}` : result.error || `Status ${statusName} not found in ${projectKey}` });
   }
 
-  if (sdProject) {
+  if (sdOk) {
     await checkStatus(config.sdProject, config.sdSentStatus, "SD Sent to Hardware status");
     await checkStatus(config.sdProject, config.sdDispatchedStatus, "SD Dispatched status");
+    await checkStatus(config.sdProject, config.outForDeliveryStatus, "SD Out for Delivery status");
+    await checkStatus(config.sdProject, config.awaitingCollectionStatus, "SD Awaiting Collection status");
+    await checkStatus(config.sdProject, config.onHoldStatus, "SD On Hold status");
+    await checkStatus(config.sdProject, config.failedStatus, "SD Delivery Failed status");
     await checkStatus(config.sdProject, config.resolvedStatus, "SD Resolved status");
   }
-  if (hwProject) {
-    await checkStatus(config.hwProject, config.hwDispatchedStatus, "HW Dispatched status");
+  if (hwOk) await checkStatus(config.hwProject, config.hwDispatchedStatus, "HW Dispatched status");
+
+  if (config.clientRestrictionEnabled) {
+    const valuesOk = Array.isArray(config.clientValues) && config.clientValues.length > 0;
+    checks.push({ key: "Client restriction values", ok: valuesOk, message: valuesOk ? `${config.clientValues.length} value(s) configured` : "Restrictions are ON but no client values are configured" });
+  } else {
+    checks.push({ key: "Client restrictions", ok: true, message: "OFF — all configured-project tickets are eligible" });
   }
 
   if (config.createEnabled) {
-    checks.push({
-      key: "HW auto-creation safety",
-      ok: !!config.hwIssueType,
-      message: config.hwIssueType ? `Enabled with issue type ${config.hwIssueType}` : "Auto-creation is ON but no HW issue type is configured",
-    });
+    checks.push({ key: "HW auto-creation safety", ok: !!config.hwIssueType, message: config.hwIssueType ? `Enabled with issue type ${config.hwIssueType}` : "Auto-creation is ON but no HW issue type is configured" });
   } else {
     checks.push({ key: "HW auto-creation safety", ok: true, message: "OFF — safe reconciliation-only mode" });
   }
