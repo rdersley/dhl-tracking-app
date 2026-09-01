@@ -7,6 +7,14 @@ modules:
         function: dm-settings-resolver
       title: Delivery Manager
 
+  jira:issueAction:
+    - key: dm-create-hardware-ticket
+      resource: dm-hardware-action-ui
+      render: native
+      resolver:
+        function: dm-hardware-action-resolver
+      title: Create Hardware Ticket
+
   scheduledTrigger:
     - key: delivery-manager-scheduler
       function: delivery-manager
@@ -18,10 +26,14 @@ modules:
       timeoutSeconds: 180
     - key: dm-settings-resolver
       handler: settings-resolver.handler
+    - key: dm-hardware-action-resolver
+      handler: hardware-action-resolver.handler
 
 resources:
   - key: dm-settings-ui
     path: src/frontend/settings.jsx
+  - key: dm-hardware-action-ui
+    path: src/frontend/hardware-action.jsx
 
 permissions:
   scopes:
