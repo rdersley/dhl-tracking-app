@@ -57,7 +57,7 @@ test("duplicate state is safe when no HW ticket exists", () => {
 });
 
 test("duplicate state warns when an HW ticket is already linked", () => {
-  const issue = { fields: { issuelinks: [{ outwardIssue: { key: "HW-42" } }] } };
+  const issue = { fields: { issuelinks: [{ outwardIssue: { key: "HW-42" } }] };
   assert.deepEqual(buildHardwareDuplicateState(issue, "HW"), {
     duplicate: true,
     existingKeys: ["HW-42"],
@@ -83,7 +83,7 @@ test("duplicate state ignores a recorded ticket from another project", () => {
 
 test("dispatch repair is not ready without tracking and date sent", () => {
   const hw = { fields: { customfield_10417: "JD001", customfield_10433: null } };
-  const sd = { fields: { status: { name: "Sent to Hardware" } };
+  const sd = { fields: { status: { name: "Sent to Hardware" } } };
   assert.deepEqual(buildDispatchRepair(hw, sd, config), {
     ready: false,
     fields: {},
