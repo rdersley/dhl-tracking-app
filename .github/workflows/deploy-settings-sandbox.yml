@@ -1,9 +1,9 @@
-name: Deploy Delivery Manager Settings Sandbox
+name: Deploy Combined Delivery Manager RC
 
 on:
   push:
     branches:
-      - deploy/delivery-manager-settings-sandbox
+      - feature/combined-delivery-manager-rc
 
 permissions:
   contents: read
@@ -28,7 +28,7 @@ jobs:
           npm install --global @forge/cli
           forge settings set usage-analytics false
           forge settings set default-environment development
-      - name: Deploy sandbox test app
+      - name: Deploy combined test app
         run: forge deploy --environment production --non-interactive --approve MAJOR_VERSION_RULE
       - name: Upgrade Nuvriqo installation to major v3
         run: forge install --upgrade --site https://nuvriqo.atlassian.net --product jira --major-version 3 --environment production --non-interactive --confirm-scopes
