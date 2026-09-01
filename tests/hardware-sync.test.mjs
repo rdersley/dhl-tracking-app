@@ -57,7 +57,7 @@ test("duplicate state is safe when no HW ticket exists", () => {
 });
 
 test("duplicate state warns when an HW ticket is already linked", () => {
-  const issue = { fields: { issuelinks: [{ outwardIssue: { key: "HW-42" } }] };
+  const issue = { fields: { issuelinks: [{ outwardIssue: { key: "HW-42" } }] } };
   assert.deepEqual(buildHardwareDuplicateState(issue, "HW"), {
     duplicate: true,
     existingKeys: ["HW-42"],
