@@ -12,7 +12,7 @@ modules:
       resource: dm-hardware-action-ui
       render: native
       resolver:
-        function: dm-hardware-action-resolver
+        function: dm-hw-action-resolver
       title: Create Hardware Ticket
 
   scheduledTrigger:
@@ -26,7 +26,7 @@ modules:
       timeoutSeconds: 180
     - key: dm-settings-resolver
       handler: settings-resolver.handler
-    - key: dm-hardware-action-resolver
+    - key: dm-hw-action-resolver
       handler: hardware-action-resolver.handler
 
 resources:
