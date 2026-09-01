@@ -1,4 +1,4 @@
-import { run as runDhl } from "./index.js";
+import { runConfiguredDhl as runDhl } from "./dhl-runtime.js";
 import { runHardwareSync } from "./hardware-sync.js";
 import { shouldRunDhl } from "./scheduler-core.mjs";
 
