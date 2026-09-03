@@ -1,7 +1,11 @@
 import Resolver from "@forge/resolver";
 import api, { route } from "@forge/api";
 import { getDeliveryManagerConfig } from "./config.js";
-import { buildHardwareDuplicateState, normaliseRecordedHardwareKeys } from "./hardware-core.mjs";
+import {
+  buildHardwareCreateFields,
+  buildHardwareDuplicateState,
+  normaliseRecordedHardwareKeys,
+} from "./hardware-core.mjs";
 
 const resolver = new Resolver();
 const CREATED_PROPERTY = "nuvriqo.delivery-manager.hardware-ticket";
@@ -18,8 +22,13 @@ async function jiraJson(path, options = {}) {
   return { ok: true, data: await response.json() };
 }
 
-async function getSourceIssue(issueKey) {
-  return jiraJson(route`/rest/api/3/issue/${issueKey}?fields=summary,description,issuelinks,project,status`);
+function sourceFields(config) {
+  const mapped = (config.hwFieldMappings || []).map((item) => item.source).filter(Boolean);
+  return [...new Set(["summary", "description", "issuelinks", "project", "status", ...mapped])];
+}
+
+async function getSourceIssue(issueKey, config) {
+  return jiraJson(route`/rest/api/3/issue/${issueKey}?fields=${sourceFields(config).join(",")}`);
 }
 
 async function getRecordedHardwareKeys(issueKey) {
@@ -44,7 +53,7 @@ async function recordHardwareKey(issueKey, hardwareKey) {
 }
 
 async function inspect(issueKey, config) {
-  const issueResult = await getSourceIssue(issueKey);
+  const issueResult = await getSourceIssue(issueKey, config);
   if (!issueResult.ok) return { ok: false, error: `Could not read ${issueKey}: ${issueResult.error}` };
 
   const issue = issueResult.data;
@@ -99,12 +108,7 @@ resolver.define("createHardwareTicket", async ({ payload }) => {
   const createResult = await jiraJson(route`/rest/api/3/issue`, {
     method: "POST",
     body: JSON.stringify({
-      fields: {
-        project: { key: config.hwProject },
-        issuetype: { name: config.hwIssueType },
-        summary: state.issue?.fields?.summary || `Hardware request for ${issueKey}`,
-        description: state.issue?.fields?.description ?? undefined,
-      },
+      fields: buildHardwareCreateFields(state.issue, issueKey, config),
     }),
   });
 
