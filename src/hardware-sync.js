@@ -3,8 +3,13 @@ import {
   normalise,
   getLinkedIssueKey,
   buildDispatchRepair,
+  buildHardwareCreateFields,
+  buildHardwareDuplicateState,
+  normaliseRecordedHardwareKeys,
 } from "./hardware-core.mjs";
 import { getDeliveryManagerConfig } from "./config.js";
+
+const CREATED_PROPERTY = "nuvriqo.delivery-manager.hardware-ticket";
 
 async function search(jql, fields, config) {
   const response = await api.asApp().requestJira(
@@ -15,6 +20,16 @@ async function search(jql, fields, config) {
   return (await response.json()).issues ?? [];
 }
 
+async function jiraJson(path, options = {}) {
+  const response = await api.asApp().requestJira(path, {
+    headers: { Accept: "application/json", "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  if (!response.ok) return { ok: false, status: response.status, error: await response.text() };
+  if (response.status === 204) return { ok: true, data: null };
+  return { ok: true, data: await response.json() };
+}
+
 async function getIssue(issueKey, fields) {
   const response = await api.asApp().requestJira(
     route`/rest/api/3/issue/${issueKey}?fields=${fields.join(",")}`,
@@ -22,6 +37,27 @@ async function getIssue(issueKey, fields) {
   );
   if (!response.ok) return null;
   return response.json();
+}
+
+async function getRecordedHardwareKeys(issueKey) {
+  const result = await jiraJson(route`/rest/api/3/issue/${issueKey}/properties/${CREATED_PROPERTY}`);
+  if (!result.ok) return [];
+  const value = result.data?.value || {};
+  return normaliseRecordedHardwareKeys(value.issueKeys || value.issueKey || []);
+}
+
+async function recordHardwareKey(issueKey, hardwareKey) {
+  const currentKeys = await getRecordedHardwareKeys(issueKey);
+  const issueKeys = [...new Set([...currentKeys, hardwareKey])];
+  return jiraJson(route`/rest/api/3/issue/${issueKey}/properties/${CREATED_PROPERTY}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      issueKey: issueKeys[0] || hardwareKey,
+      issueKeys,
+      lastCreatedKey: hardwareKey,
+      recordedAt: new Date().toISOString(),
+    }),
+  });
 }
 
 async function updateFields(issueKey, fields) {
@@ -79,14 +115,7 @@ async function addInternalComment(issueKey, text) {
 }
 
 async function reconcileDispatchedHardware(config) {
-  const fields = [
-    config.trackingField,
-    config.dateSentField,
-    "issuelinks",
-    "status",
-    "summary",
-  ];
-
+  const fields = [config.trackingField, config.dateSentField, "issuelinks", "status", "summary"];
   const jql =
     `project = ${config.hwProject} ` +
     `AND status = "${config.hwDispatchedStatus}" ` +
@@ -104,11 +133,7 @@ async function reconcileDispatchedHardware(config) {
       continue;
     }
 
-    const sdIssue = await getIssue(sdKey, [
-      config.trackingField,
-      config.dateSentField,
-      "status",
-    ]);
+    const sdIssue = await getIssue(sdKey, [config.trackingField, config.dateSentField, "status"]);
     if (!sdIssue) continue;
 
     const repair = buildDispatchRepair(hwIssue, sdIssue, config);
@@ -116,21 +141,12 @@ async function reconcileDispatchedHardware(config) {
 
     const fieldsOk = await updateFields(sdKey, repair.fields);
     let transitionOk = true;
-    if (repair.transition && config.transitionsEnabled) {
-      transitionOk = await transitionTo(sdKey, config.sdDispatchedStatus);
-    }
+    if (repair.transition && config.transitionsEnabled) transitionOk = await transitionTo(sdKey, config.sdDispatchedStatus);
 
-    if (
-      fieldsOk &&
-      transitionOk &&
-      (Object.keys(repair.fields).length || (repair.transition && config.transitionsEnabled))
-    ) {
+    if (fieldsOk && transitionOk && (Object.keys(repair.fields).length || (repair.transition && config.transitionsEnabled))) {
       repaired += 1;
       if (config.commentsEnabled) {
-        await addInternalComment(
-          sdKey,
-          `Hardware dispatch synchronised automatically from ${hwIssue.key}. Tracking Number and Date Sent were verified and the SD workflow was reconciled.`
-        );
+        await addInternalComment(sdKey, `Hardware dispatch synchronised automatically from ${hwIssue.key}. Tracking Number and Date Sent were verified and the SD workflow was reconciled.`);
       }
       console.log(`HW-SYNC: repaired ${hwIssue.key} -> ${sdKey}`);
     }
@@ -142,35 +158,46 @@ async function reconcileDispatchedHardware(config) {
 async function createMissingHardwareTickets(config) {
   if (!config.createEnabled) {
     console.log("HW-SYNC: automatic HW ticket creation is disabled; reconciliation-only mode");
-    return { checked: 0, created: 0 };
+    return { checked: 0, created: 0, skippedDuplicates: 0 };
   }
-
   if (!config.hwIssueType) {
     console.log("HW-SYNC: auto-creation enabled but HW issue type is not configured");
-    return { checked: 0, created: 0 };
+    return { checked: 0, created: 0, skippedDuplicates: 0 };
   }
 
+  const mappedSources = (config.hwFieldMappings || []).map((item) => item.source).filter(Boolean);
+  const sourceFields = [...new Set(["summary", "description", "issuelinks", "status", ...mappedSources])];
   const sdIssues = await search(
     `project = ${config.sdProject} AND status = "${config.sdSentStatus}" ORDER BY updated ASC`,
-    ["summary", "description", "issuelinks", "status"],
+    sourceFields,
     config
   );
+
   let created = 0;
+  let skippedDuplicates = 0;
 
   for (const sdIssue of sdIssues) {
-    if (getLinkedIssueKey(sdIssue, config.hwProject)) continue;
+    const recordedKeys = await getRecordedHardwareKeys(sdIssue.key);
+    const duplicateState = buildHardwareDuplicateState(sdIssue, config.hwProject, recordedKeys);
+    if (duplicateState.duplicate) {
+      skippedDuplicates += 1;
+      continue;
+    }
+
+    // Re-read links immediately before the destructive create to reduce race risk.
+    const fresh = await getIssue(sdIssue.key, sourceFields);
+    if (!fresh) continue;
+    const freshRecordedKeys = await getRecordedHardwareKeys(sdIssue.key);
+    const freshDuplicate = buildHardwareDuplicateState(fresh, config.hwProject, freshRecordedKeys);
+    if (freshDuplicate.duplicate) {
+      skippedDuplicates += 1;
+      continue;
+    }
 
     const response = await api.asApp().requestJira(route`/rest/api/3/issue`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        fields: {
-          project: { key: config.hwProject },
-          issuetype: { name: config.hwIssueType },
-          summary: sdIssue.fields?.summary || `Hardware request for ${sdIssue.key}`,
-          description: sdIssue.fields?.description ?? undefined,
-        },
-      }),
+      body: JSON.stringify({ fields: buildHardwareCreateFields(fresh, sdIssue.key, config) }),
     });
 
     if (!response.ok) {
@@ -179,6 +206,17 @@ async function createMissingHardwareTickets(config) {
     }
 
     const createdIssue = await response.json();
+    if (!createdIssue?.key) {
+      console.log(`HW-SYNC: Jira created an HW issue for ${sdIssue.key} but returned no key; stopping auto-create cycle`);
+      break;
+    }
+
+    const recordResult = await recordHardwareKey(sdIssue.key, createdIssue.key);
+    if (!recordResult.ok) {
+      console.log(`HW-SYNC: CRITICAL - created ${createdIssue.key} for ${sdIssue.key} but could not record duplicate safeguard; auto-create cycle stopped`);
+      break;
+    }
+
     const linkResponse = await api.asApp().requestJira(route`/rest/api/3/issueLink`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -190,7 +228,7 @@ async function createMissingHardwareTickets(config) {
     });
 
     if (!linkResponse.ok) {
-      console.log(`HW-SYNC: created ${createdIssue.key} but linking to ${sdIssue.key} failed`);
+      console.log(`HW-SYNC: created ${createdIssue.key} but linking to ${sdIssue.key} failed; recorded safeguard will prevent duplicate retry`);
       continue;
     }
 
@@ -200,20 +238,18 @@ async function createMissingHardwareTickets(config) {
     }
   }
 
-  return { checked: sdIssues.length, created };
+  return { checked: sdIssues.length, created, skippedDuplicates };
 }
 
 export async function runHardwareSync() {
   console.log("HW-SYNC: starting hardware handover reconciliation");
-
   try {
     const config = await getDeliveryManagerConfig();
     const dispatch = await reconcileDispatchedHardware(config);
     const creation = await createMissingHardwareTickets(config);
-
     console.log(
       `HW-SYNC: complete; dispatched checked=${dispatch.checked}, repaired=${dispatch.repaired}, ` +
-      `sent-to-hardware checked=${creation.checked}, created=${creation.created}`
+      `sent-to-hardware checked=${creation.checked}, created=${creation.created}, duplicate-skips=${creation.skippedDuplicates}`
     );
   } catch (error) {
     console.log(`HW-SYNC: failed: ${String(error)}`);
