@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildDispatchRepair,
+  buildHardwareCreateFields,
   buildHardwareDuplicateState,
+  buildMappedHardwareFields,
   getLinkedIssueKey,
   getLinkedIssueKeys,
   normaliseRecordedHardwareKeys,
@@ -15,35 +17,20 @@ const config = {
 };
 
 test("finds linked SD issue regardless of link direction", () => {
-  const issue = {
-    fields: {
-      issuelinks: [
-        { outwardIssue: { key: "OTHER-1" } },
-        { inwardIssue: { key: "SD-123" } },
-      ],
-    },
-  };
+  const issue = { fields: { issuelinks: [{ outwardIssue: { key: "OTHER-1" } }, { inwardIssue: { key: "SD-123" } }] } };
   assert.equal(getLinkedIssueKey(issue, "SD"), "SD-123");
 });
 
 test("finds linked HW issue by project prefix", () => {
-  const issue = {
-    fields: { issuelinks: [{ outwardIssue: { key: "HW-77" } }] },
-  };
+  const issue = { fields: { issuelinks: [{ outwardIssue: { key: "HW-77" } }] } };
   assert.equal(getLinkedIssueKey(issue, "HW"), "HW-77");
 });
 
 test("finds all linked HW issues and de-duplicates repeated links", () => {
-  const issue = {
-    fields: {
-      issuelinks: [
-        { outwardIssue: { key: "HW-77" } },
-        { inwardIssue: { key: "HW-88" } },
-        { outwardIssue: { key: "HW-77" } },
-        { outwardIssue: { key: "OTHER-1" } },
-      ],
-    },
-  };
+  const issue = { fields: { issuelinks: [
+    { outwardIssue: { key: "HW-77" } }, { inwardIssue: { key: "HW-88" } },
+    { outwardIssue: { key: "HW-77" } }, { outwardIssue: { key: "OTHER-1" } },
+  ] } };
   assert.deepEqual(getLinkedIssueKeys(issue, "HW"), ["HW-77", "HW-88"]);
 });
 
@@ -55,44 +42,29 @@ test("recorded hardware keys support legacy single values and de-duplicate array
 test("duplicate state is safe when no HW ticket exists", () => {
   const issue = { fields: { issuelinks: [{ outwardIssue: { key: "OTHER-1" } }] } };
   assert.deepEqual(buildHardwareDuplicateState(issue, "HW"), {
-    duplicate: false,
-    existingKeys: [],
-    linkedKeys: [],
-    recordedIssueKeys: [],
-    recordedIssueKey: null,
+    duplicate: false, existingKeys: [], linkedKeys: [], recordedIssueKeys: [], recordedIssueKey: null,
   });
 });
 
 test("duplicate state warns when an HW ticket is already linked", () => {
   const issue = { fields: { issuelinks: [{ outwardIssue: { key: "HW-42" } }] } };
   assert.deepEqual(buildHardwareDuplicateState(issue, "HW"), {
-    duplicate: true,
-    existingKeys: ["HW-42"],
-    linkedKeys: ["HW-42"],
-    recordedIssueKeys: [],
-    recordedIssueKey: null,
+    duplicate: true, existingKeys: ["HW-42"], linkedKeys: ["HW-42"], recordedIssueKeys: [], recordedIssueKey: null,
   });
 });
 
 test("duplicate state protects a created ticket whose link failed", () => {
   const issue = { fields: { issuelinks: [] } };
   assert.deepEqual(buildHardwareDuplicateState(issue, "HW", "HW-99"), {
-    duplicate: true,
-    existingKeys: ["HW-99"],
-    linkedKeys: [],
-    recordedIssueKeys: ["HW-99"],
-    recordedIssueKey: "HW-99",
+    duplicate: true, existingKeys: ["HW-99"], linkedKeys: [], recordedIssueKeys: ["HW-99"], recordedIssueKey: "HW-99",
   });
 });
 
 test("duplicate state preserves multiple recorded HW tickets", () => {
   const issue = { fields: { issuelinks: [{ outwardIssue: { key: "HW-42" } }] } };
   assert.deepEqual(buildHardwareDuplicateState(issue, "HW", ["HW-42", "HW-99", "HW-100"]), {
-    duplicate: true,
-    existingKeys: ["HW-42", "HW-99", "HW-100"],
-    linkedKeys: ["HW-42"],
-    recordedIssueKeys: ["HW-42", "HW-99", "HW-100"],
-    recordedIssueKey: "HW-42",
+    duplicate: true, existingKeys: ["HW-42", "HW-99", "HW-100"], linkedKeys: ["HW-42"],
+    recordedIssueKeys: ["HW-42", "HW-99", "HW-100"], recordedIssueKey: "HW-42",
   });
 });
 
@@ -101,63 +73,59 @@ test("duplicate state ignores recorded tickets from another project", () => {
   assert.deepEqual(buildHardwareDuplicateState(issue, "HW", ["OTHER-9", "HW-10"]).existingKeys, ["HW-10"]);
 });
 
+test("mapped HW fields copy configured source values to configured targets", () => {
+  const source = { fields: { customfield_1: "ABC", customfield_2: { value: "Ryanair" } } };
+  const mappingConfig = { hwFieldMappings: [
+    { source: "customfield_1", target: "customfield_101" },
+    { source: "customfield_2", target: "customfield_102" },
+  ] };
+  assert.deepEqual(buildMappedHardwareFields(source, mappingConfig), {
+    customfield_101: "ABC",
+    customfield_102: { value: "Ryanair" },
+  });
+});
+
+test("mapped HW fields ignore empty values and protected Jira create fields", () => {
+  const source = { fields: { customfield_1: null, customfield_2: "X", customfield_3: "Y" } };
+  const mappingConfig = { hwFieldMappings: [
+    { source: "customfield_1", target: "customfield_101" },
+    { source: "customfield_2", target: "summary" },
+    { source: "customfield_3", target: "customfield_103" },
+  ] };
+  assert.deepEqual(buildMappedHardwareFields(source, mappingConfig), { customfield_103: "Y" });
+});
+
+test("hardware create fields include project, issue type, summary, description and mappings", () => {
+  const source = { fields: { summary: "Laptop replacement", description: { type: "doc" }, customfield_1: "ABC" } };
+  const mappingConfig = { hwProject: "HW", hwIssueType: "Task", hwFieldMappings: [{ source: "customfield_1", target: "customfield_101" }] };
+  assert.deepEqual(buildHardwareCreateFields(source, "SD-12", mappingConfig), {
+    project: { key: "HW" }, issuetype: { name: "Task" }, summary: "Laptop replacement",
+    description: { type: "doc" }, customfield_101: "ABC",
+  });
+});
+
 test("dispatch repair is not ready without tracking and date sent", () => {
   const hw = { fields: { customfield_10417: "JD001", customfield_10433: null } };
   const sd = { fields: { status: { name: "Sent to Hardware" } } };
-  assert.deepEqual(buildDispatchRepair(hw, sd, config), {
-    ready: false,
-    fields: {},
-    transition: false,
-  });
+  assert.deepEqual(buildDispatchRepair(hw, sd, config), { ready: false, fields: {}, transition: false });
 });
 
 test("dispatch repair copies missing values and requests SD transition", () => {
   const hw = { fields: { customfield_10417: "JD001", customfield_10433: "2026-08-31" } };
-  const sd = {
-    fields: {
-      customfield_10417: null,
-      customfield_10433: null,
-      status: { name: "Sent to Hardware" },
-    },
-  };
+  const sd = { fields: { customfield_10417: null, customfield_10433: null, status: { name: "Sent to Hardware" } } };
   assert.deepEqual(buildDispatchRepair(hw, sd, config), {
-    ready: true,
-    fields: {
-      customfield_10417: "JD001",
-      customfield_10433: "2026-08-31",
-    },
-    transition: true,
+    ready: true, fields: { customfield_10417: "JD001", customfield_10433: "2026-08-31" }, transition: true,
   });
 });
 
 test("dispatch repair is idempotent when SD is already correct", () => {
   const hw = { fields: { customfield_10417: "JD001", customfield_10433: "2026-08-31" } };
-  const sd = {
-    fields: {
-      customfield_10417: "JD001",
-      customfield_10433: "2026-08-31",
-      status: { name: "Dispatched" },
-    },
-  };
-  assert.deepEqual(buildDispatchRepair(hw, sd, config), {
-    ready: true,
-    fields: {},
-    transition: false,
-  });
+  const sd = { fields: { customfield_10417: "JD001", customfield_10433: "2026-08-31", status: { name: "Dispatched" } } };
+  assert.deepEqual(buildDispatchRepair(hw, sd, config), { ready: true, fields: {}, transition: false });
 });
 
 test("dispatch repair corrects changed HW values without repeating transition", () => {
   const hw = { fields: { customfield_10417: "JD002", customfield_10433: "2026-08-31" } };
-  const sd = {
-    fields: {
-      customfield_10417: "JD001",
-      customfield_10433: "2026-08-31",
-      status: { name: "Dispatched" },
-    },
-  };
-  assert.deepEqual(buildDispatchRepair(hw, sd, config), {
-    ready: true,
-    fields: { customfield_10417: "JD002" },
-    transition: false,
-  });
+  const sd = { fields: { customfield_10417: "JD001", customfield_10433: "2026-08-31", status: { name: "Dispatched" } } };
+  assert.deepEqual(buildDispatchRepair(hw, sd, config), { ready: true, fields: { customfield_10417: "JD002" }, transition: false });
 });
