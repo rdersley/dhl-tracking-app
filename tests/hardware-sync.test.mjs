@@ -5,6 +5,7 @@ import {
   buildHardwareDuplicateState,
   getLinkedIssueKey,
   getLinkedIssueKeys,
+  normaliseRecordedHardwareKeys,
 } from "../src/hardware-core.mjs";
 
 const config = {
@@ -46,12 +47,18 @@ test("finds all linked HW issues and de-duplicates repeated links", () => {
   assert.deepEqual(getLinkedIssueKeys(issue, "HW"), ["HW-77", "HW-88"]);
 });
 
+test("recorded hardware keys support legacy single values and de-duplicate arrays", () => {
+  assert.deepEqual(normaliseRecordedHardwareKeys("HW-7"), ["HW-7"]);
+  assert.deepEqual(normaliseRecordedHardwareKeys(["HW-7", "HW-8", "HW-7", ""]), ["HW-7", "HW-8"]);
+});
+
 test("duplicate state is safe when no HW ticket exists", () => {
   const issue = { fields: { issuelinks: [{ outwardIssue: { key: "OTHER-1" } }] } };
   assert.deepEqual(buildHardwareDuplicateState(issue, "HW"), {
     duplicate: false,
     existingKeys: [],
     linkedKeys: [],
+    recordedIssueKeys: [],
     recordedIssueKey: null,
   });
 });
@@ -62,23 +69,36 @@ test("duplicate state warns when an HW ticket is already linked", () => {
     duplicate: true,
     existingKeys: ["HW-42"],
     linkedKeys: ["HW-42"],
+    recordedIssueKeys: [],
     recordedIssueKey: null,
   });
 });
 
-test("duplicate state also protects a created ticket whose link failed", () => {
+test("duplicate state protects a created ticket whose link failed", () => {
   const issue = { fields: { issuelinks: [] } };
   assert.deepEqual(buildHardwareDuplicateState(issue, "HW", "HW-99"), {
     duplicate: true,
     existingKeys: ["HW-99"],
     linkedKeys: [],
+    recordedIssueKeys: ["HW-99"],
     recordedIssueKey: "HW-99",
   });
 });
 
-test("duplicate state ignores a recorded ticket from another project", () => {
+test("duplicate state preserves multiple recorded HW tickets", () => {
+  const issue = { fields: { issuelinks: [{ outwardIssue: { key: "HW-42" } }] } };
+  assert.deepEqual(buildHardwareDuplicateState(issue, "HW", ["HW-42", "HW-99", "HW-100"]), {
+    duplicate: true,
+    existingKeys: ["HW-42", "HW-99", "HW-100"],
+    linkedKeys: ["HW-42"],
+    recordedIssueKeys: ["HW-42", "HW-99", "HW-100"],
+    recordedIssueKey: "HW-42",
+  });
+});
+
+test("duplicate state ignores recorded tickets from another project", () => {
   const issue = { fields: { issuelinks: [] } };
-  assert.equal(buildHardwareDuplicateState(issue, "HW", "OTHER-9").duplicate, false);
+  assert.deepEqual(buildHardwareDuplicateState(issue, "HW", ["OTHER-9", "HW-10"]).existingKeys, ["HW-10"]);
 });
 
 test("dispatch repair is not ready without tracking and date sent", () => {
