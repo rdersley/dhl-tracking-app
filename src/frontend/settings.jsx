@@ -2,18 +2,19 @@ import React, { useEffect, useState } from "react";
 import ForgeReconciler, { Box, Button, Heading, Label, MessageBanner, Select, Stack, Text, Textfield, Toggle, xcss } from "@forge/react";
 import { invoke } from "@forge/bridge";
 
-const UI_BUILD = "DM-COMBINED-RC-20260901-1";
+const UI_BUILD = "DM-COMBINED-RC-20260903-2";
 const sectionStyle = xcss({ padding: "space.200", borderRadius: "border.radius.200", backgroundColor: "elevation.surface" });
 
 const FALLBACK_CONFIG = {
   sdProject: "SD", hwProject: "HW", sdSentStatus: "Sent to Hardware", hwDispatchedStatus: "Dispatched", sdDispatchedStatus: "Dispatched",
   outForDeliveryStatus: "OUT FOR DELIVERY", awaitingCollectionStatus: "DELIVERY AWAITING COLLECTION", onHoldStatus: "DELIVERY ON HOLD", failedStatus: "DELIVERY FAILED", resolvedStatus: "Resolved",
   trackingField: "customfield_10417", dateSentField: "customfield_10433", deliveryStatusField: "customfield_11952", deliveryDateField: "customfield_10434", signedForField: "customfield_10442", lastDhlCheckField: "customfield_14400",
-  clientField: "", clientRestrictionEnabled: false, clientValues: [], hwIssueType: "", hwLinkType: "Relates", commentsEnabled: true, transitionsEnabled: true, createEnabled: false,
+  clientField: "", clientRestrictionEnabled: false, clientValues: [], hwIssueType: "", hwLinkType: "Relates", hwFieldMappings: [], commentsEnabled: true, transitionsEnabled: true, createEnabled: false,
   maxResults: 100, dhlBatchSize: 10, dhlDelayMs: 3000, minDaysSinceSent: 3,
 };
 
 const optionFor = (options, value) => options.find((item) => item.value === value) || (value ? { label: value, value } : null);
+const labelForField = (fields, value) => fields.find((item) => item.value === value)?.label || value || "Unknown field";
 const withTimeout = (promise, label, timeoutMs = 12000) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs))]);
 
 function App() {
@@ -22,6 +23,8 @@ function App() {
   const [fields, setFields] = useState([]);
   const [sdStatuses, setSdStatuses] = useState([]);
   const [hwStatuses, setHwStatuses] = useState([]);
+  const [mappingSource, setMappingSource] = useState("");
+  const [mappingTarget, setMappingTarget] = useState("");
   const [validation, setValidation] = useState(null);
   const [message, setMessage] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -31,7 +34,7 @@ function App() {
 
   useEffect(() => {
     withTimeout(invoke("getConfig"), "Saved settings request").then((saved) => {
-      setConfig((current) => ({ ...current, ...(saved || {}) }));
+      setConfig((current) => ({ ...current, ...(saved || {}), hwFieldMappings: saved?.hwFieldMappings || [] }));
       setConfigStatus("Saved settings loaded successfully.");
     }).catch((error) => setConfigStatus(`Saved settings could not be loaded: ${String(error)}`));
 
@@ -62,6 +65,25 @@ function App() {
   const projectSelect = (key) => <Select options={projects} value={optionFor(projects, config[key])} onChange={(option) => patch(key, option?.value || "")} />;
   const fieldSelect = (key) => <Select options={fields} value={optionFor(fields, config[key])} onChange={(option) => patch(key, option?.value || "")} />;
   const statusSelect = (key, options, emptyText) => <Select options={options} value={optionFor(options, config[key])} onChange={(option) => patch(key, option?.value || "")} placeholder={options.length ? "Select a Jira status" : emptyText} />;
+
+  const addMapping = () => {
+    if (!mappingSource || !mappingTarget) {
+      setMessage({ appearance: "warning", text: "Choose both a Service Desk source field and Hardware target field." });
+      return;
+    }
+    if ((config.hwFieldMappings || []).some((item) => item.target === mappingTarget)) {
+      setMessage({ appearance: "warning", text: "That Hardware target field is already mapped." });
+      return;
+    }
+    patch("hwFieldMappings", [...(config.hwFieldMappings || []), { source: mappingSource, target: mappingTarget }]);
+    setMappingSource("");
+    setMappingTarget("");
+    setMessage({ appearance: "success", text: "Field mapping added. Save settings when you are ready." });
+  };
+
+  const removeMapping = (index) => {
+    patch("hwFieldMappings", (config.hwFieldMappings || []).filter((_, itemIndex) => itemIndex !== index));
+  };
 
   const save = async () => {
     setBusy(true);
@@ -109,18 +131,31 @@ function App() {
       <Label>Date Delivered</Label>{fieldSelect("deliveryDateField")}<Label>Signed For</Label>{fieldSelect("signedForField")}<Label>Last DHL Check</Label>{fieldSelect("lastDhlCheckField")}
     </Stack></Box>
 
+    <Box xcss={sectionStyle}><Stack space="space.200"><Heading as="h2">SD → Hardware field mappings</Heading>
+      <Text>Choose any additional Service Desk fields that should be copied into the Hardware ticket when it is created.</Text>
+      <Label>Service Desk source field</Label><Select options={fields} value={optionFor(fields, mappingSource)} onChange={(option) => setMappingSource(option?.value || "")} placeholder="Select source field" />
+      <Label>Hardware target field</Label><Select options={fields} value={optionFor(fields, mappingTarget)} onChange={(option) => setMappingTarget(option?.value || "")} placeholder="Select target field" />
+      <Box><Button onClick={addMapping}>Add field mapping</Button></Box>
+      {(config.hwFieldMappings || []).length === 0 && <Text>No additional field mappings configured.</Text>}
+      {(config.hwFieldMappings || []).map((mapping, index) => <Box key={`${mapping.source}-${mapping.target}-${index}`}>
+        <Text>{labelForField(fields, mapping.source)} → {labelForField(fields, mapping.target)}</Text>
+        <Button appearance="subtle" onClick={() => removeMapping(index)}>Remove</Button>
+      </Box>)}
+    </Stack></Box>
+
     <Box xcss={sectionStyle}><Stack space="space.200"><Heading as="h2">Client restrictions</Heading>
       <Toggle isChecked={config.clientRestrictionEnabled} onChange={(e) => patch("clientRestrictionEnabled", e.target.checked)} label="Restrict tracking to selected client values" />
       {config.clientRestrictionEnabled && <><Label>Client field</Label>{fieldSelect("clientField")}<Label labelFor="client-values">Allowed client values (comma separated)</Label><Textfield id="client-values" value={(config.clientValues || []).join(", ")} onChange={(e) => patch("clientValues", e.target.value.split(",").map((v) => v.trim()).filter(Boolean))} /></>}
     </Stack></Box>
 
     <Box xcss={sectionStyle}><Stack space="space.200"><Heading as="h2">Hardware handover safety</Heading>
-      <Label labelFor="hw-type">HW issue type</Label><Textfield id="hw-type" value={config.hwIssueType} onChange={(e) => patch("hwIssueType", e.target.value)} placeholder="Leave blank while auto-creation is off" />
+      <Label labelFor="hw-type">HW issue type</Label><Textfield id="hw-type" value={config.hwIssueType} onChange={(e) => patch("hwIssueType", e.target.value)} placeholder="For example Task or Hardware Request" />
       <Label labelFor="link-type">Issue link type</Label><Textfield id="link-type" value={config.hwLinkType} onChange={(e) => patch("hwLinkType", e.target.value)} />
+      <Text>Manual Create Hardware Ticket checks existing links and recorded creations before creating, then checks again on the server. Scheduled creation uses the same duplicate safeguards.</Text>
       <Toggle isChecked={config.commentsEnabled} onChange={(e) => patch("commentsEnabled", e.target.checked)} label="Add internal automated comments" />
       <Toggle isChecked={config.transitionsEnabled} onChange={(e) => patch("transitionsEnabled", e.target.checked)} label="Allow workflow transitions" />
       <Toggle isChecked={config.createEnabled} onChange={(e) => patch("createEnabled", e.target.checked)} label="Automatically create missing HW tickets" />
-      {config.createEnabled && <MessageBanner appearance="warning">Only enable HW ticket creation after reconciliation-only testing has passed. It remains OFF by default.</MessageBanner>}
+      {config.createEnabled && <MessageBanner appearance="warning">Only enable automatic HW creation after the manual creation and duplicate-protection tests have passed in the sandbox.</MessageBanner>}
     </Stack></Box>
 
     <Box xcss={sectionStyle}><Stack space="space.200"><Heading as="h2">DHL polling</Heading>
