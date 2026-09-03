@@ -24,6 +24,7 @@ export const DEFAULT_CONFIG = {
   clientValues: [],
   hwIssueType: "",
   hwLinkType: "Relates",
+  hwFieldMappings: [],
   createEnabled: false,
   commentsEnabled: true,
   transitionsEnabled: true,
@@ -39,6 +40,20 @@ export const DEFAULT_CONFIG = {
   failedValue: "Delivery Failed",
 };
 
+function cleanMappings(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const mappings = [];
+  for (const item of value) {
+    const source = String(item?.source || "").trim();
+    const target = String(item?.target || "").trim();
+    if (!source || !target || seen.has(target)) continue;
+    seen.add(target);
+    mappings.push({ source, target });
+  }
+  return mappings.slice(0, 50);
+}
+
 export async function getDeliveryManagerConfig() {
   const saved = (await kvs.get(CONFIG_KEY)) || {};
   return {
@@ -48,6 +63,7 @@ export async function getDeliveryManagerConfig() {
     commentsEnabled: saved.commentsEnabled !== false,
     transitionsEnabled: saved.transitionsEnabled !== false,
     clientRestrictionEnabled: saved.clientRestrictionEnabled === true,
+    hwFieldMappings: cleanMappings(saved.hwFieldMappings),
   };
 }
 
@@ -60,6 +76,7 @@ export async function saveDeliveryManagerConfig(config) {
     transitionsEnabled: config?.transitionsEnabled !== false,
     clientRestrictionEnabled: config?.clientRestrictionEnabled === true,
     clientValues: Array.isArray(config?.clientValues) ? config.clientValues.map(String).map((v) => v.trim()).filter(Boolean) : [],
+    hwFieldMappings: cleanMappings(config?.hwFieldMappings),
     maxResults: Math.max(1, Math.min(100, Number(config?.maxResults || 100))),
     dhlBatchSize: Math.max(1, Math.min(50, Number(config?.dhlBatchSize || 10))),
     dhlDelayMs: Math.max(1000, Math.min(15000, Number(config?.dhlDelayMs || 3000))),
