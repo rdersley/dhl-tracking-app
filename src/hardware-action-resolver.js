@@ -1,7 +1,7 @@
 import Resolver from "@forge/resolver";
 import api, { route } from "@forge/api";
 import { getDeliveryManagerConfig } from "./config.js";
-import { buildHardwareDuplicateState } from "./hardware-core.mjs";
+import { buildHardwareDuplicateState, normaliseRecordedHardwareKeys } from "./hardware-core.mjs";
 
 const resolver = new Resolver();
 const CREATED_PROPERTY = "nuvriqo.delivery-manager.hardware-ticket";
@@ -22,16 +22,24 @@ async function getSourceIssue(issueKey) {
   return jiraJson(route`/rest/api/3/issue/${issueKey}?fields=summary,description,issuelinks,project,status`);
 }
 
-async function getRecordedHardwareKey(issueKey) {
+async function getRecordedHardwareKeys(issueKey) {
   const result = await jiraJson(route`/rest/api/3/issue/${issueKey}/properties/${CREATED_PROPERTY}`);
-  if (!result.ok) return null;
-  return result.data?.value?.issueKey || null;
+  if (!result.ok) return [];
+  const value = result.data?.value || {};
+  return normaliseRecordedHardwareKeys(value.issueKeys || value.issueKey || []);
 }
 
 async function recordHardwareKey(issueKey, hardwareKey) {
+  const currentKeys = await getRecordedHardwareKeys(issueKey);
+  const issueKeys = [...new Set([...currentKeys, hardwareKey])];
   return jiraJson(route`/rest/api/3/issue/${issueKey}/properties/${CREATED_PROPERTY}`, {
     method: "PUT",
-    body: JSON.stringify({ issueKey: hardwareKey, recordedAt: new Date().toISOString() }),
+    body: JSON.stringify({
+      issueKey: issueKeys[0] || hardwareKey,
+      issueKeys,
+      lastCreatedKey: hardwareKey,
+      recordedAt: new Date().toISOString(),
+    }),
   });
 }
 
@@ -49,8 +57,8 @@ async function inspect(issueKey, config) {
     };
   }
 
-  const recordedKey = await getRecordedHardwareKey(issueKey);
-  const duplicate = buildHardwareDuplicateState(issue, config.hwProject, recordedKey);
+  const recordedKeys = await getRecordedHardwareKeys(issueKey);
+  const duplicate = buildHardwareDuplicateState(issue, config.hwProject, recordedKeys);
   return {
     ok: true,
     issueKey,
@@ -77,8 +85,6 @@ resolver.define("createHardwareTicket", async ({ payload }) => {
   if (!config.hwProject) return { ok: false, error: "Hardware project is not configured." };
   if (!config.hwIssueType) return { ok: false, error: "Hardware issue type is not configured." };
 
-  // Important: always re-read links immediately before creating. The UI check is advisory;
-  // this backend check is the actual duplicate guard.
   const state = await inspect(issueKey, config);
   if (!state.ok) return state;
   if (state.duplicate && !force) {
@@ -109,9 +115,16 @@ resolver.define("createHardwareTicket", async ({ payload }) => {
   const hardwareKey = createResult.data?.key;
   if (!hardwareKey) return { ok: false, error: "Jira created the issue but returned no issue key." };
 
-  // Record the created key before linking. If linking fails, a retry will still surface the
-  // existing HW ticket rather than silently creating another one.
-  await recordHardwareKey(issueKey, hardwareKey);
+  const recordResult = await recordHardwareKey(issueKey, hardwareKey);
+  if (!recordResult.ok) {
+    return {
+      ok: false,
+      created: true,
+      recordFailed: true,
+      hardwareKey,
+      error: `${hardwareKey} was created, but Delivery Manager could not record the creation safeguard. Do not retry this action until the ticket is linked or the issue is checked manually.`,
+    };
+  }
 
   const linkResult = await jiraJson(route`/rest/api/3/issueLink`, {
     method: "POST",
