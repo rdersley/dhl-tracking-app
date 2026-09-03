@@ -19,18 +19,30 @@ export function getLinkedIssueKey(issue, projectKey) {
   return getLinkedIssueKeys(issue, projectKey)[0] ?? null;
 }
 
-export function buildHardwareDuplicateState(issue, projectKey, recordedIssueKey = null) {
+export function normaliseRecordedHardwareKeys(recorded) {
+  if (Array.isArray(recorded)) {
+    return [...new Set(recorded.map((key) => String(key || "").trim()).filter(Boolean))];
+  }
+  const single = String(recorded || "").trim();
+  return single ? [single] : [];
+}
+
+export function buildHardwareDuplicateState(issue, projectKey, recordedIssueKeys = []) {
   const linkedKeys = getLinkedIssueKeys(issue, projectKey);
   const keys = new Set(linkedKeys);
-  const recorded = String(recordedIssueKey || "").trim();
   const prefix = `${String(projectKey).toUpperCase()}-`;
-  if (recorded && recorded.toUpperCase().startsWith(prefix)) keys.add(recorded);
+  const recordedKeys = normaliseRecordedHardwareKeys(recordedIssueKeys)
+    .filter((key) => key.toUpperCase().startsWith(prefix));
+
+  for (const key of recordedKeys) keys.add(key);
+
   const existingKeys = [...keys];
   return {
     duplicate: existingKeys.length > 0,
     existingKeys,
     linkedKeys,
-    recordedIssueKey: recorded || null,
+    recordedIssueKeys: recordedKeys,
+    recordedIssueKey: recordedKeys[0] || null,
   };
 }
 
