@@ -46,6 +46,31 @@ export function buildHardwareDuplicateState(issue, projectKey, recordedIssueKeys
   };
 }
 
+export function buildMappedHardwareFields(sourceIssue, config) {
+  const fields = {};
+  const mappings = Array.isArray(config?.hwFieldMappings) ? config.hwFieldMappings : [];
+  for (const mapping of mappings) {
+    const source = String(mapping?.source || "").trim();
+    const target = String(mapping?.target || "").trim();
+    if (!source || !target || ["project", "issuetype", "summary", "description"].includes(target)) continue;
+    const value = sourceIssue?.fields?.[source];
+    if (value !== undefined && value !== null && value !== "") fields[target] = value;
+  }
+  return fields;
+}
+
+export function buildHardwareCreateFields(sourceIssue, sourceKey, config) {
+  return {
+    project: { key: config.hwProject },
+    issuetype: { name: config.hwIssueType },
+    summary: sourceIssue?.fields?.summary || `Hardware request for ${sourceKey}`,
+    ...(sourceIssue?.fields?.description !== undefined && sourceIssue?.fields?.description !== null
+      ? { description: sourceIssue.fields.description }
+      : {}),
+    ...buildMappedHardwareFields(sourceIssue, config),
+  };
+}
+
 export function buildDispatchRepair(hwIssue, sdIssue, config) {
   const tracking = hwIssue?.fields?.[config.trackingField] ?? null;
   const dateSent = hwIssue?.fields?.[config.dateSentField] ?? null;
