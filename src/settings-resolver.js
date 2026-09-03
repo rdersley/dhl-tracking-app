@@ -103,6 +103,28 @@ resolver.define("validateConfig", async ({ payload }) => {
     checks.push({ key: label, ok: !!fieldName, message: fieldName ? `Found ${fieldName}` : `Field ${fieldId || "not configured"} not found` });
   }
 
+  const mappings = Array.isArray(config.hwFieldMappings) ? config.hwFieldMappings : [];
+  const mappingTargets = new Set();
+  let mappingsOk = true;
+  for (const [index, mapping] of mappings.entries()) {
+    const sourceName = fieldNamesById.get(mapping?.source);
+    const targetName = fieldNamesById.get(mapping?.target);
+    const duplicateTarget = mappingTargets.has(mapping?.target);
+    if (mapping?.target) mappingTargets.add(mapping.target);
+    const ok = !!sourceName && !!targetName && !duplicateTarget;
+    mappingsOk = mappingsOk && ok;
+    checks.push({
+      key: `HW field mapping ${index + 1}`,
+      ok,
+      message: ok
+        ? `${sourceName} → ${targetName}`
+        : duplicateTarget
+          ? `Target field ${targetName || mapping?.target || "not configured"} is mapped more than once`
+          : `Invalid mapping: ${sourceName || mapping?.source || "source missing"} → ${targetName || mapping?.target || "target missing"}`,
+    });
+  }
+  if (!mappings.length) checks.push({ key: "HW field mappings", ok: true, message: "No additional SD → HW field mappings configured" });
+
   async function checkStatus(projectKey, statusName, label) {
     if (!projectKey || !statusName) {
       checks.push({ key: label, ok: false, message: "Not configured" });
@@ -132,7 +154,7 @@ resolver.define("validateConfig", async ({ payload }) => {
   }
 
   if (config.createEnabled) {
-    checks.push({ key: "HW auto-creation safety", ok: !!config.hwIssueType, message: config.hwIssueType ? `Enabled with issue type ${config.hwIssueType}` : "Auto-creation is ON but no HW issue type is configured" });
+    checks.push({ key: "HW auto-creation safety", ok: !!config.hwIssueType && mappingsOk, message: config.hwIssueType && mappingsOk ? `Enabled with issue type ${config.hwIssueType}; duplicate safeguards active` : "Auto-creation is ON but the HW issue type or field mappings need attention" });
   } else {
     checks.push({ key: "HW auto-creation safety", ok: true, message: "OFF — safe reconciliation-only mode" });
   }
