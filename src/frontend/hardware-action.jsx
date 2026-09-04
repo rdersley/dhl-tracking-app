@@ -92,6 +92,23 @@ function App() {
 
   const existing = state?.existingKeys || [];
   const hasExisting = state?.duplicate === true && existing.length > 0;
+  const resultWasCreated = result?.created === true || result?.ok === true;
+  const resultNeedsAttention = resultWasCreated && (result?.recordFailed || result?.linkFailed);
+  const resultAppearance = result?.ok ? "success" : resultNeedsAttention ? "warning" : "error";
+  const resultTitle = result?.ok
+    ? "Hardware ticket created"
+    : result?.recordFailed
+      ? "Ticket created — duplicate safeguard needs attention"
+      : result?.linkFailed
+        ? "Ticket created but link needs attention"
+        : "Hardware ticket not created";
+  const resultMessage = result?.ok
+    ? `${result.hardwareKey} was created and linked successfully.`
+    : result?.recordFailed
+      ? `${result.hardwareKey || "The hardware ticket"} was created, but Delivery Manager could not record its duplicate-prevention safeguard. Do not retry creation until the ticket has been checked and linked.`
+      : result?.linkFailed
+        ? `${result.hardwareKey || "The hardware ticket"} was created, but Delivery Manager could not complete the Jira link. The created ticket has been recorded so a retry will not blindly create another.`
+        : result?.error || "Delivery Manager could not create the hardware ticket.";
 
   return (
     <Stack space="space.200">
@@ -112,11 +129,8 @@ function App() {
       )}
 
       {result && (
-        <SectionMessage
-          appearance={result.ok ? "success" : result.linkFailed ? "warning" : "error"}
-          title={result.ok ? "Hardware ticket created" : result.linkFailed ? "Ticket created but link needs attention" : "Hardware ticket not created"}
-        >
-          <Text>{result.ok ? `${result.hardwareKey} was created and linked successfully.` : result.error}</Text>
+        <SectionMessage appearance={resultAppearance} title={resultTitle}>
+          <Text>{resultMessage}</Text>
           {result?.hardwareKey && <Link href={`/browse/${result.hardwareKey}`}>Open {result.hardwareKey}</Link>}
         </SectionMessage>
       )}
@@ -130,12 +144,12 @@ function App() {
       )}
 
       <ButtonGroup>
-        {!hasExisting && !result?.ok && (
+        {!hasExisting && !resultWasCreated && (
           <Button appearance="primary" onClick={() => create(false)} isDisabled={busy}>
             {busy ? "Creating…" : "Create Hardware Ticket"}
           </Button>
         )}
-        {hasExisting && !result?.ok && (
+        {hasExisting && !resultWasCreated && (
           <Button appearance="danger" onClick={() => create(true)} isDisabled={busy}>
             {busy ? "Checking…" : "Create another anyway"}
           </Button>
