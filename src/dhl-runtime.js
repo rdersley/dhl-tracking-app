@@ -1,5 +1,5 @@
 import api, { route } from "@forge/api";
-import { getDeliveryManagerConfig } from "./config.js";
+import { getDeliveryManagerConfig, getDhlApiKey } from "./config.js";
 import {
   normalise,
   parseJiraDate,
@@ -10,16 +10,15 @@ import {
 } from "./core.mjs";
 import { buildEligibleIssueJql, deliveryDecision, safeDhlRuntimeConfig } from "./dhl-config-core.mjs";
 
-const DHL_API_KEY = process.env.DHL_API_KEY;
-const DHL_URL = "https://api-eu.dhl.com/track/shipments";
-
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function getDHL(trackingNumber) {
+async function getDHL(trackingNumber, config, apiKey) {
   try {
-    const response = await fetch(`${DHL_URL}?trackingNumber=${encodeURIComponent(trackingNumber)}`, {
+    const baseUrl = String(config.dhlApiUrl || "https://api-eu.dhl.com/track/shipments").replace(/\?+$/, "");
+    const separator = baseUrl.includes("?") ? "&" : "?";
+    const response = await fetch(`${baseUrl}${separator}trackingNumber=${encodeURIComponent(trackingNumber)}`, {
       method: "GET",
-      headers: { "DHL-API-Key": DHL_API_KEY, Accept: "application/json" },
+      headers: { "DHL-API-Key": apiKey, Accept: "application/json" },
     });
     if (response.status === 429) return { rateLimited: true, retryAfter: response.headers.get("Retry-After") };
     if (!response.ok) return { error: true, status: response.status, body: await response.text() };
@@ -117,9 +116,7 @@ async function handleDelivered(issueKey, shipment, config) {
       "This update was applied automatically by Delivery Manager.",
     ].join("\n"));
   }
-  if (config.transitionsEnabled) {
-    await transitionToStatus(issueKey, config.resolvedStatus, "Done");
-  }
+  if (config.transitionsEnabled) await transitionToStatus(issueKey, config.resolvedStatus, "Done");
 }
 
 async function handleNonDelivered(issue, analysis, config) {
@@ -128,18 +125,17 @@ async function handleNonDelivered(issue, analysis, config) {
   if (decision.deliveryStatus && currentDeliveryStatus !== decision.deliveryStatus) {
     await updateIssueFields(issue.key, { [config.deliveryStatusField]: { value: decision.deliveryStatus } });
   }
-  if (decision.workflowStatus && config.transitionsEnabled) {
-    await transitionToStatus(issue.key, decision.workflowStatus);
-  }
+  if (decision.workflowStatus && config.transitionsEnabled) await transitionToStatus(issue.key, decision.workflowStatus);
 }
 
 export async function runConfiguredDhl() {
-  if (!DHL_API_KEY) {
-    console.log("DHL: DHL_API_KEY is not configured");
+  const config = safeDhlRuntimeConfig(await getDeliveryManagerConfig());
+  const apiKey = await getDhlApiKey();
+  if (!apiKey) {
+    console.log("DHL: API key is not configured in Delivery Manager settings");
     return;
   }
 
-  const config = safeDhlRuntimeConfig(await getDeliveryManagerConfig());
   let issues;
   try {
     issues = await searchEligibleIssues(config);
@@ -162,7 +158,7 @@ export async function runConfiguredDhl() {
     const trackingNumber = issue.fields[config.trackingField];
     if (!trackingNumber) continue;
     await sleep(config.dhlDelayMs);
-    const dhl = await getDHL(trackingNumber);
+    const dhl = await getDHL(trackingNumber, config, apiKey);
     if (dhl.rateLimited) {
       console.log(`DHL: rate limited; Retry-After=${dhl.retryAfter ?? "unknown"}`);
       break;
