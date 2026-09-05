@@ -14,6 +14,12 @@ modules:
       resolver:
         function: dm-hw-action-resolver
       title: Create Hardware Ticket
+    - key: dm-create-dhl-shipment
+      resource: dm-shipment-action-ui
+      render: native
+      resolver:
+        function: dm-shipment-resolver
+      title: Create DHL Shipment
 
   scheduledTrigger:
     - key: delivery-manager-scheduler
@@ -28,12 +34,17 @@ modules:
       handler: settings-resolver.handler
     - key: dm-hw-action-resolver
       handler: hardware-action-resolver.handler
+    - key: dm-shipment-resolver
+      handler: shipment-action-resolver.handler
+      timeoutSeconds: 120
 
 resources:
   - key: dm-settings-ui
     path: src/frontend/settings.jsx
   - key: dm-hardware-action-ui
     path: src/frontend/hardware-action.jsx
+  - key: dm-shipment-action-ui
+    path: src/frontend/shipment-action.jsx
 
 permissions:
   scopes:
