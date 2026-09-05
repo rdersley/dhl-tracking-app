@@ -36,7 +36,6 @@ modules:
       handler: hardware-action-resolver.handler
     - key: dm-shipment-resolver
       handler: shipment-action-resolver.handler
-      timeoutSeconds: 120
 
 resources:
   - key: dm-settings-ui
