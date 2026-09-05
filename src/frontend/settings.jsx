@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import ForgeReconciler, { Box, Button, Heading, Inline, Label, MessageBanner, Select, Stack, Text, Textfield, Toggle, xcss } from "@forge/react";
 import { invoke } from "@forge/bridge";
 
-const UI_BUILD = "DM-COMBINED-RC-20260905-UI5";
+const UI_BUILD = "DM-COMBINED-RC-20260905-UI6";
 
 const pageStyle = xcss({ maxWidth: "1240px" });
 const heroStyle = xcss({ padding: "space.300", borderRadius: "border.radius.300", backgroundColor: "color.background.neutral.subtle" });
@@ -117,6 +117,7 @@ function App() {
   const [mappingTarget, setMappingTarget] = useState("");
   const [validation, setValidation] = useState(null);
   const [preview, setPreview] = useState(null);
+  const [runtimeHealth, setRuntimeHealth] = useState(null);
   const [message, setMessage] = useState(null);
   const [busy, setBusy] = useState(false);
   const [activeTab, setActiveTab] = useState("general");
@@ -140,6 +141,10 @@ function App() {
       setResolutions(options?.resolutions || []);
       setOptionsStatus(`Jira options loaded: ${options?.projects?.length || 0} projects, ${options?.fields?.length || 0} fields, ${options?.issueTypes?.length || 0} issue types.`);
     }).catch((error) => setOptionsStatus(`Jira options could not be loaded: ${String(error)}`));
+
+    withTimeout(invoke("getRuntimeHealth"), "Runtime health request").then((health) => {
+      setRuntimeHealth(health || null);
+    }).catch(() => setRuntimeHealth(null));
   }, []);
 
   useEffect(() => {
@@ -255,6 +260,19 @@ function App() {
       setMessage({ appearance: result?.ok ? "success" : "warning", text: result?.ok ? "Read-only operational preview completed." : "Preview completed with one or more Jira query problems." });
     } catch (error) {
       setMessage({ appearance: "error", text: `Operational preview failed: ${String(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshHealth = async () => {
+    setBusy(true);
+    try {
+      const health = await withTimeout(invoke("getRuntimeHealth"), "Runtime health request");
+      setRuntimeHealth(health || null);
+      setMessage({ appearance: "success", text: "Runtime health refreshed." });
+    } catch (error) {
+      setMessage({ appearance: "error", text: `Could not load runtime health: ${String(error)}` });
     } finally {
       setBusy(false);
     }
@@ -475,6 +493,21 @@ function App() {
   </Box>;
 
   const diagnosticsTab = <Stack space="space.250">
+    <Box xcss={sectionStyle}>
+      <Stack space="space.200">
+        <SectionHeader title="Runtime health" description="See the most recent scheduler execution and what each part of the app actually did." />
+        <Inline space="space.100"><Button onClick={refreshHealth} isDisabled={busy}>Refresh runtime health</Button></Inline>
+        {runtimeHealth?.lastRunCompletedAt ? <Box xcss={runtimeHealth.ok ? statusOkStyle : statusWarnStyle}>
+          <Stack space="space.075">
+            <Text>Last scheduler run: {runtimeHealth.lastRunCompletedAt}</Text>
+            <Text>Overall result: {runtimeHealth.ok ? "Healthy" : "Needs attention"}</Text>
+            <Text>Hardware: {runtimeHealth.hardware?.ok === false ? `Failed${runtimeHealth.hardware?.error ? ` — ${runtimeHealth.hardware.error}` : ""}` : `Checked ${runtimeHealth.hardware?.dispatch?.checked ?? 0}, repaired ${runtimeHealth.hardware?.dispatch?.repaired ?? 0}, created ${runtimeHealth.hardware?.creation?.created ?? 0}, duplicate skips ${runtimeHealth.hardware?.creation?.skippedDuplicates ?? 0}`}</Text>
+            <Text>DHL: {runtimeHealth.dhl?.skipped ? `Skipped — ${runtimeHealth.dhl?.reason || "not due"}` : `Eligible ${runtimeHealth.dhl?.eligible ?? 0}, processed ${runtimeHealth.dhl?.processed ?? 0}, updated ${runtimeHealth.dhl?.updated ?? 0}, delivered ${runtimeHealth.dhl?.delivered ?? 0}, failed requests ${runtimeHealth.dhl?.failedRequests ?? 0}${runtimeHealth.dhl?.rateLimited ? ", rate limited" : ""}`}</Text>
+          </Stack>
+        </Box> : <Box xcss={infoStyle}><Text>No scheduler health record exists yet. The first scheduled run after this build is deployed will populate it.</Text></Box>}
+      </Stack>
+    </Box>
+
     <Box xcss={sectionStyle}>
       <Stack space="space.200">
         <SectionHeader title="Configuration validation" description="Check projects, statuses, issue/link types, fields, DHL credentials and automation safeguards." />
