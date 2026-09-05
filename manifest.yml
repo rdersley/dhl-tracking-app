@@ -46,6 +46,7 @@ permissions:
     fetch:
       backend:
         - address: 'https://api-eu.dhl.com'
+        - address: 'https://express.api.dhl.com'
 
 app:
   id: ari:cloud:ecosystem::app/f0ecb50d-1984-4439-a763-aac7fee40051
