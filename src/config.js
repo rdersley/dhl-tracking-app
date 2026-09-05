@@ -2,6 +2,8 @@ import { kvs } from "@forge/kvs";
 
 export const CONFIG_KEY = "delivery-manager-config-v1";
 export const DHL_API_KEY_SECRET = "delivery-manager-dhl-api-key";
+export const DHL_SHIPPING_USERNAME_SECRET = "delivery-manager-dhl-shipping-username";
+export const DHL_SHIPPING_PASSWORD_SECRET = "delivery-manager-dhl-shipping-password";
 
 export const DEFAULT_CONFIG = {
   sdProject: "SD",
@@ -36,6 +38,12 @@ export const DEFAULT_CONFIG = {
   minDaysSinceSent: 3,
   dhlApiUrl: "https://api-eu.dhl.com/track/shipments",
   dhlAccountNumber: "",
+  dhlShippingEnabled: false,
+  dhlShippingEnvironment: "test",
+  dhlShippingApiUrl: "https://express.api.dhl.com/mydhlapi/test",
+  dhlShippingAccountNumber: "",
+  dhlProductCode: "",
+  dhlPickupRequestedByDefault: false,
   deliveredValue: "Delivered",
   inTransitValue: "In Transit",
   outForDeliveryValue: "Out for Delivery",
@@ -70,13 +78,34 @@ function cleanDhlUrl(value) {
   }
 }
 
+function cleanShippingUrl(value, environment = "test") {
+  const fallback = environment === "production"
+    ? "https://express.api.dhl.com/mydhlapi"
+    : "https://express.api.dhl.com/mydhlapi/test";
+  const text = String(value || fallback).trim();
+  try {
+    const url = new URL(text);
+    if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "express.api.dhl.com") return fallback;
+    const path = url.pathname.replace(/\/$/, "");
+    if (!path.startsWith("/mydhlapi")) return fallback;
+    return `${url.origin}${path}`;
+  } catch {
+    return fallback;
+  }
+}
+
 function cleanText(value, fallback = "", max = 200) {
   const text = String(value ?? fallback).trim();
   return text.slice(0, max);
 }
 
+function cleanShippingEnvironment(value) {
+  return String(value || "").toLowerCase() === "production" ? "production" : "test";
+}
+
 export async function getDeliveryManagerConfig() {
   const saved = (await kvs.get(CONFIG_KEY)) || {};
+  const environment = cleanShippingEnvironment(saved.dhlShippingEnvironment || DEFAULT_CONFIG.dhlShippingEnvironment);
   return {
     ...DEFAULT_CONFIG,
     ...saved,
@@ -88,10 +117,17 @@ export async function getDeliveryManagerConfig() {
     dhlApiUrl: cleanDhlUrl(saved.dhlApiUrl),
     dhlAccountNumber: cleanText(saved.dhlAccountNumber),
     resolutionName: cleanText(saved.resolutionName, DEFAULT_CONFIG.resolutionName, 100),
+    dhlShippingEnabled: saved.dhlShippingEnabled === true,
+    dhlShippingEnvironment: environment,
+    dhlShippingApiUrl: cleanShippingUrl(saved.dhlShippingApiUrl, environment),
+    dhlShippingAccountNumber: cleanText(saved.dhlShippingAccountNumber, "", 100),
+    dhlProductCode: cleanText(saved.dhlProductCode, "", 20),
+    dhlPickupRequestedByDefault: saved.dhlPickupRequestedByDefault === true,
   };
 }
 
 export async function saveDeliveryManagerConfig(config) {
+  const environment = cleanShippingEnvironment(config?.dhlShippingEnvironment);
   const clean = {
     ...DEFAULT_CONFIG,
     ...config,
@@ -108,6 +144,12 @@ export async function saveDeliveryManagerConfig(config) {
     dhlApiUrl: cleanDhlUrl(config?.dhlApiUrl),
     dhlAccountNumber: cleanText(config?.dhlAccountNumber, "", 100),
     resolutionName: cleanText(config?.resolutionName, DEFAULT_CONFIG.resolutionName, 100),
+    dhlShippingEnabled: config?.dhlShippingEnabled === true,
+    dhlShippingEnvironment: environment,
+    dhlShippingApiUrl: cleanShippingUrl(config?.dhlShippingApiUrl, environment),
+    dhlShippingAccountNumber: cleanText(config?.dhlShippingAccountNumber, "", 100),
+    dhlProductCode: cleanText(config?.dhlProductCode, "", 20),
+    dhlPickupRequestedByDefault: config?.dhlPickupRequestedByDefault === true,
     deliveredValue: cleanText(config?.deliveredValue, DEFAULT_CONFIG.deliveredValue, 100),
     inTransitValue: cleanText(config?.inTransitValue, DEFAULT_CONFIG.inTransitValue, 100),
     outForDeliveryValue: cleanText(config?.outForDeliveryValue, DEFAULT_CONFIG.outForDeliveryValue, 100),
@@ -117,6 +159,9 @@ export async function saveDeliveryManagerConfig(config) {
   };
   delete clean.dhlApiKey;
   delete clean.dhlApiKeyConfigured;
+  delete clean.dhlShippingUsername;
+  delete clean.dhlShippingPassword;
+  delete clean.dhlShippingCredentialsConfigured;
   await kvs.set(CONFIG_KEY, clean);
   return clean;
 }
@@ -142,4 +187,35 @@ export async function clearDhlApiKey() {
   } catch {
     // It is safe to treat a missing secret as already cleared.
   }
+}
+
+export async function getDhlShippingCredentials() {
+  const [username, password] = await Promise.all([
+    kvs.getSecret(DHL_SHIPPING_USERNAME_SECRET),
+    kvs.getSecret(DHL_SHIPPING_PASSWORD_SECRET),
+  ]);
+  return { username: String(username || ""), password: String(password || "") };
+}
+
+export async function hasDhlShippingCredentials() {
+  const credentials = await getDhlShippingCredentials();
+  return Boolean(credentials.username && credentials.password);
+}
+
+export async function setDhlShippingCredentials(usernameValue, passwordValue) {
+  const username = String(usernameValue || "").trim();
+  const password = String(passwordValue || "");
+  if (!username || !password) return false;
+  await Promise.all([
+    kvs.setSecret(DHL_SHIPPING_USERNAME_SECRET, username),
+    kvs.setSecret(DHL_SHIPPING_PASSWORD_SECRET, password),
+  ]);
+  return true;
+}
+
+export async function clearDhlShippingCredentials() {
+  await Promise.all([
+    kvs.deleteSecret(DHL_SHIPPING_USERNAME_SECRET).catch(() => undefined),
+    kvs.deleteSecret(DHL_SHIPPING_PASSWORD_SECRET).catch(() => undefined),
+  ]);
 }
