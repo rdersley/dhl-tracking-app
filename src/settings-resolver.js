@@ -9,6 +9,7 @@ import {
   getDhlApiKey,
 } from "./config.js";
 import { buildEligibleIssueJql } from "./dhl-config-core.mjs";
+import { getDeliveryManagerHealth } from "./health.js";
 
 const resolver = new Resolver();
 
@@ -87,6 +88,7 @@ async function searchPreview(jql, maxResults = 25) {
 
 resolver.define("getConfig", async () => ({ ...(await getDeliveryManagerConfig()), dhlApiKeyConfigured: await hasDhlApiKey() }));
 resolver.define("saveConfig", async ({ payload }) => ({ ok: true, config: await saveDeliveryManagerConfig(payload?.config || {}) }));
+resolver.define("getRuntimeHealth", async () => getDeliveryManagerHealth());
 
 resolver.define("saveDhlCredentials", async ({ payload }) => {
   const apiKey = String(payload?.apiKey || "").trim();
