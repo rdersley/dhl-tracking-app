@@ -10,6 +10,7 @@ export const DEFAULT_CONFIG = {
   hwDispatchedStatus: "Dispatched",
   sdDispatchedStatus: "Dispatched",
   resolvedStatus: "Resolved",
+  resolutionName: "Done",
   outForDeliveryStatus: "OUT FOR DELIVERY",
   awaitingCollectionStatus: "DELIVERY AWAITING COLLECTION",
   onHoldStatus: "DELIVERY ON HOLD",
@@ -69,6 +70,11 @@ function cleanDhlUrl(value) {
   }
 }
 
+function cleanText(value, fallback = "", max = 200) {
+  const text = String(value ?? fallback).trim();
+  return text.slice(0, max);
+}
+
 export async function getDeliveryManagerConfig() {
   const saved = (await kvs.get(CONFIG_KEY)) || {};
   return {
@@ -80,7 +86,8 @@ export async function getDeliveryManagerConfig() {
     clientRestrictionEnabled: saved.clientRestrictionEnabled === true,
     hwFieldMappings: cleanMappings(saved.hwFieldMappings),
     dhlApiUrl: cleanDhlUrl(saved.dhlApiUrl),
-    dhlAccountNumber: String(saved.dhlAccountNumber || "").trim(),
+    dhlAccountNumber: cleanText(saved.dhlAccountNumber),
+    resolutionName: cleanText(saved.resolutionName, DEFAULT_CONFIG.resolutionName, 100),
   };
 }
 
@@ -92,22 +99,30 @@ export async function saveDeliveryManagerConfig(config) {
     commentsEnabled: config?.commentsEnabled !== false,
     transitionsEnabled: config?.transitionsEnabled !== false,
     clientRestrictionEnabled: config?.clientRestrictionEnabled === true,
-    clientValues: Array.isArray(config?.clientValues) ? config.clientValues.map(String).map((v) => v.trim()).filter(Boolean) : [],
+    clientValues: Array.isArray(config?.clientValues) ? config.clientValues.map(String).map((v) => v.trim()).filter(Boolean).slice(0, 100) : [],
     hwFieldMappings: cleanMappings(config?.hwFieldMappings),
     maxResults: Math.max(1, Math.min(100, Number(config?.maxResults || 100))),
     dhlBatchSize: Math.max(1, Math.min(50, Number(config?.dhlBatchSize || 10))),
     dhlDelayMs: Math.max(1000, Math.min(15000, Number(config?.dhlDelayMs || 3000))),
     minDaysSinceSent: Math.max(0, Math.min(30, Number(config?.minDaysSinceSent ?? 3))),
     dhlApiUrl: cleanDhlUrl(config?.dhlApiUrl),
-    dhlAccountNumber: String(config?.dhlAccountNumber || "").trim().slice(0, 100),
+    dhlAccountNumber: cleanText(config?.dhlAccountNumber, "", 100),
+    resolutionName: cleanText(config?.resolutionName, DEFAULT_CONFIG.resolutionName, 100),
+    deliveredValue: cleanText(config?.deliveredValue, DEFAULT_CONFIG.deliveredValue, 100),
+    inTransitValue: cleanText(config?.inTransitValue, DEFAULT_CONFIG.inTransitValue, 100),
+    outForDeliveryValue: cleanText(config?.outForDeliveryValue, DEFAULT_CONFIG.outForDeliveryValue, 100),
+    awaitingCollectionValue: cleanText(config?.awaitingCollectionValue, DEFAULT_CONFIG.awaitingCollectionValue, 100),
+    onHoldValue: cleanText(config?.onHoldValue, DEFAULT_CONFIG.onHoldValue, 100),
+    failedValue: cleanText(config?.failedValue, DEFAULT_CONFIG.failedValue, 100),
   };
   delete clean.dhlApiKey;
+  delete clean.dhlApiKeyConfigured;
   await kvs.set(CONFIG_KEY, clean);
   return clean;
 }
 
 export async function getDhlApiKey() {
-  return (await kvs.getSecret(DHL_API_KEY_SECRET)) || process.env.DHL_API_KEY || "";
+  return (await kvs.getSecret(DHL_API_KEY_SECRET)) || "";
 }
 
 export async function hasDhlApiKey() {
