@@ -117,7 +117,7 @@ async function handleDelivered(issueKey, shipment, config) {
     [config.signedForField]: signedFor,
   };
   if (deliveredDate) fields[config.deliveryDateField] = deliveredDate;
-  if (!(await updateIssueFields(issueKey, fields))) return;
+  if (!(await updateIssueFields(issueKey, fields))) return { ok: false, updated: false };
   if (config.commentsEnabled) {
     await addInternalComment(issueKey, [
       "📦 Delivery Manager DHL update",
@@ -128,16 +128,23 @@ async function handleDelivered(issueKey, shipment, config) {
       "This update was applied automatically by Delivery Manager.",
     ].join("\n"));
   }
-  if (config.transitionsEnabled) await transitionToStatus(issueKey, config.resolvedStatus, config.resolutionName || null);
+  let transitionOk = true;
+  if (config.transitionsEnabled) transitionOk = await transitionToStatus(issueKey, config.resolvedStatus, config.resolutionName || null);
+  return { ok: transitionOk, updated: true, transitioned: config.transitionsEnabled ? transitionOk : false };
 }
 
 async function handleNonDelivered(issue, analysis, config) {
   const decision = deliveryDecision(analysis, config);
   const currentDeliveryStatus = currentDropdownValue(issue.fields[config.deliveryStatusField]);
+  let updated = false;
   if (decision.deliveryStatus && currentDeliveryStatus !== decision.deliveryStatus) {
-    await updateIssueFields(issue.key, { [config.deliveryStatusField]: { value: decision.deliveryStatus } });
+    updated = await updateIssueFields(issue.key, { [config.deliveryStatusField]: { value: decision.deliveryStatus } });
   }
-  if (decision.workflowStatus && config.transitionsEnabled) await transitionToStatus(issue.key, decision.workflowStatus);
+  let transitioned = false;
+  if (decision.workflowStatus && config.transitionsEnabled) {
+    transitioned = await transitionToStatus(issue.key, decision.workflowStatus);
+  }
+  return { ok: true, updated, transitioned, decision };
 }
 
 export async function runConfiguredDhl() {
@@ -145,15 +152,16 @@ export async function runConfiguredDhl() {
   const apiKey = await getDhlApiKey();
   if (!apiKey) {
     console.log("DHL: API key is not configured in Delivery Manager settings");
-    return;
+    return { ok: false, skipped: true, reason: "api-key-not-configured", eligible: 0, processed: 0 };
   }
 
   let issues;
   try {
     issues = await searchEligibleIssues(config);
   } catch (error) {
-    console.log(`DHL: Jira search failed: ${String(error)}`);
-    return;
+    const result = { ok: false, skipped: false, reason: "jira-search-failed", error: String(error), eligible: 0, processed: 0 };
+    console.log(`DHL: Jira search failed: ${result.error}`);
+    return result;
   }
 
   const cutoff = new Date();
@@ -164,6 +172,16 @@ export async function runConfiguredDhl() {
   });
   issues.sort((a, b) => compareIssuesForFairRotation(a, b, config.dateSentField, config.lastDhlCheckField));
   const toProcess = issues.slice(0, config.dhlBatchSize);
+  const summary = {
+    ok: true,
+    skipped: false,
+    eligible: issues.length,
+    processed: 0,
+    delivered: 0,
+    updated: 0,
+    failedRequests: 0,
+    rateLimited: false,
+  };
   console.log(`DHL: eligible=${issues.length}, processing=${toProcess.length}`);
 
   for (const issue of toProcess) {
@@ -172,18 +190,32 @@ export async function runConfiguredDhl() {
     await sleep(config.dhlDelayMs);
     const dhl = await getDHL(trackingNumber, config, apiKey);
     if (dhl.rateLimited) {
+      summary.rateLimited = true;
+      summary.ok = false;
       console.log(`DHL: rate limited; Retry-After=${dhl.retryAfter ?? "unknown"}`);
       break;
     }
+    summary.processed += 1;
     await updateIssueFields(issue.key, { [config.lastDhlCheckField]: new Date().toISOString() });
     if (!dhl.ok) {
+      summary.failedRequests += 1;
       console.log(`DHL: request failed for ${issue.key}: ${dhl.status ?? ""} ${dhl.body ?? dhl.message ?? ""}`);
       continue;
     }
     const shipment = dhl.data?.shipments?.[0];
     if (!shipment) continue;
     const analysis = analyseDHLStatuses(collectStatusStrings(shipment));
-    if (analysis.delivered) await handleDelivered(issue.key, shipment, config);
-    else await handleNonDelivered(issue, analysis, config);
+    if (analysis.delivered) {
+      const result = await handleDelivered(issue.key, shipment, config);
+      summary.delivered += 1;
+      if (result.updated) summary.updated += 1;
+      if (!result.ok) summary.ok = false;
+    } else {
+      const result = await handleNonDelivered(issue, analysis, config);
+      if (result.updated || result.transitioned) summary.updated += 1;
+    }
   }
+
+  if (summary.failedRequests > 0) summary.ok = false;
+  return summary;
 }
