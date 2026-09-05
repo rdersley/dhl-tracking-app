@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import ForgeReconciler, { Box, Button, Heading, Inline, Label, MessageBanner, Select, Stack, Text, Textfield, Toggle, xcss } from "@forge/react";
 import { invoke } from "@forge/bridge";
 
-const UI_BUILD = "DM-COMBINED-RC-20260905-UI6";
+const UI_BUILD = "DM-COMBINED-RC-20260905-UI7";
 
 const pageStyle = xcss({ maxWidth: "1240px" });
 const heroStyle = xcss({ padding: "space.300", borderRadius: "border.radius.300", backgroundColor: "color.background.neutral.subtle" });
@@ -50,6 +50,13 @@ const FALLBACK_CONFIG = {
   dhlApiUrl: "https://api-eu.dhl.com/track/shipments",
   dhlAccountNumber: "",
   dhlApiKeyConfigured: false,
+  dhlShippingEnabled: false,
+  dhlShippingEnvironment: "test",
+  dhlShippingApiUrl: "https://express.api.dhl.com/mydhlapi/test",
+  dhlShippingAccountNumber: "",
+  dhlProductCode: "",
+  dhlPickupRequestedByDefault: false,
+  dhlShippingCredentialsConfigured: false,
   deliveredValue: "Delivered",
   inTransitValue: "In Transit",
   outForDeliveryValue: "Out for Delivery",
@@ -123,6 +130,9 @@ function App() {
   const [activeTab, setActiveTab] = useState("general");
   const [apiKey, setApiKey] = useState("");
   const [apiTest, setApiTest] = useState(null);
+  const [shippingUsername, setShippingUsername] = useState("");
+  const [shippingPassword, setShippingPassword] = useState("");
+  const [shippingTest, setShippingTest] = useState(null);
   const [configStatus, setConfigStatus] = useState("Loading saved settings…");
   const [optionsStatus, setOptionsStatus] = useState("Loading Jira configuration options…");
   const [statusStatus, setStatusStatus] = useState("Loading project statuses…");
@@ -178,7 +188,12 @@ function App() {
     setBusy(true);
     try {
       const result = await withTimeout(invoke("saveConfig", { config }), "Save settings request");
-      setConfig((current) => ({ ...current, ...(result?.config || {}), dhlApiKeyConfigured: current.dhlApiKeyConfigured }));
+      setConfig((current) => ({
+        ...current,
+        ...(result?.config || {}),
+        dhlApiKeyConfigured: current.dhlApiKeyConfigured,
+        dhlShippingCredentialsConfigured: current.dhlShippingCredentialsConfigured,
+      }));
       setMessage({ appearance: "success", text: "Settings saved successfully." });
     } catch (error) {
       setMessage({ appearance: "error", text: `Could not save settings: ${String(error)}` });
@@ -231,6 +246,57 @@ function App() {
       setMessage({ appearance: result?.ok ? "success" : "warning", text: result?.message || "DHL connection test completed." });
     } catch (error) {
       setMessage({ appearance: "error", text: `DHL connection test failed: ${String(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveShippingCredentials = async () => {
+    setBusy(true);
+    setShippingTest(null);
+    try {
+      const result = await withTimeout(invoke("saveDhlShippingCredentials", { username: shippingUsername, password: shippingPassword }), "Save DHL shipping credentials");
+      if (result?.ok) {
+        setConfig((current) => ({ ...current, dhlShippingCredentialsConfigured: true }));
+        setShippingUsername("");
+        setShippingPassword("");
+        setMessage({ appearance: "success", text: result.message || "DHL Express shipping credentials saved securely." });
+      } else {
+        setMessage({ appearance: "warning", text: result?.message || "Could not save DHL Express shipping credentials." });
+      }
+    } catch (error) {
+      setMessage({ appearance: "error", text: `Could not save DHL Express shipping credentials: ${String(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearShippingCredentials = async () => {
+    setBusy(true);
+    setShippingTest(null);
+    try {
+      const result = await withTimeout(invoke("saveDhlShippingCredentials", { clear: true }), "Clear DHL shipping credentials");
+      setConfig((current) => ({ ...current, dhlShippingCredentialsConfigured: false, dhlShippingEnabled: false }));
+      setShippingUsername("");
+      setShippingPassword("");
+      setMessage({ appearance: "success", text: result?.message || "DHL Express shipping credentials cleared." });
+    } catch (error) {
+      setMessage({ appearance: "error", text: `Could not clear DHL Express shipping credentials: ${String(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const testShippingApi = async () => {
+    setBusy(true);
+    setShippingTest(null);
+    try {
+      await withTimeout(invoke("saveConfig", { config }), "Save settings request");
+      const result = await withTimeout(invoke("testDhlShippingConnection", { config }), "DHL Express connection test", 30000);
+      setShippingTest(result);
+      setMessage({ appearance: result?.ok ? "success" : "warning", text: result?.message || "DHL Express connection test completed." });
+    } catch (error) {
+      setMessage({ appearance: "error", text: `DHL Express connection test failed: ${String(error)}` });
     } finally {
       setBusy(false);
     }
@@ -405,33 +471,79 @@ function App() {
   const apiTab = <Stack space="space.250">
     <Box xcss={sectionStyle}>
       <Stack space="space.250">
-        <SectionHeader title="DHL API configuration" description="Configure the DHL connection here instead of relying on source-code or deployment secrets." />
+        <SectionHeader title="DHL tracking API" description="Configure the tracking connection here instead of relying on source-code or deployment secrets." />
         <Box xcss={config.dhlApiKeyConfigured ? statusOkStyle : statusWarnStyle}>
-          <Text>{config.dhlApiKeyConfigured ? "DHL API key is configured securely." : "DHL API key is not configured."}</Text>
+          <Text>{config.dhlApiKeyConfigured ? "DHL tracking API key is configured securely." : "DHL tracking API key is not configured."}</Text>
         </Box>
         <FieldBlock label="DHL tracking API URL" help="For security, this build only permits HTTPS endpoints on api-eu.dhl.com.">
           <Textfield value={config.dhlApiUrl || ""} onChange={(e) => patch("dhlApiUrl", e.target.value)} />
         </FieldBlock>
-        <FieldBlock label="DHL account number (optional)" help="Reserved for account-specific DHL capabilities and future shipment creation.">
+        <FieldBlock label="DHL account number (optional)" help="Can be retained as a general account reference; shipment creation has its own account setting below.">
           <Textfield value={config.dhlAccountNumber || ""} onChange={(e) => patch("dhlAccountNumber", e.target.value)} />
         </FieldBlock>
-        <FieldBlock label="DHL API key" help={config.dhlApiKeyConfigured ? "A key is already stored. Enter a new value only when replacing it." : "Paste the DHL API key and save it securely."}>
+        <FieldBlock label="DHL tracking API key" help={config.dhlApiKeyConfigured ? "A key is already stored. Enter a new value only when replacing it." : "Paste the DHL API key and save it securely."}>
           <Textfield type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={config.dhlApiKeyConfigured ? "••••••••••••••••" : "Enter DHL API key"} />
         </FieldBlock>
         <Inline space="space.100" shouldWrap>
-          <Button appearance="primary" onClick={saveApiKey} isDisabled={busy || !apiKey}>Save API key securely</Button>
-          <Button onClick={testApi} isDisabled={busy || !config.dhlApiKeyConfigured}>Test DHL connection</Button>
-          {config.dhlApiKeyConfigured ? <Button appearance="subtle" onClick={clearApiKey} isDisabled={busy}>Clear API key</Button> : null}
+          <Button appearance="primary" onClick={saveApiKey} isDisabled={busy || !apiKey}>Save tracking API key</Button>
+          <Button onClick={testApi} isDisabled={busy || !config.dhlApiKeyConfigured}>Test tracking connection</Button>
+          {config.dhlApiKeyConfigured ? <Button appearance="subtle" onClick={clearApiKey} isDisabled={busy}>Clear tracking API key</Button> : null}
         </Inline>
         {apiTest ? <Box xcss={apiTest.ok ? statusOkStyle : statusWarnStyle}><Text>{apiTest.message}</Text></Box> : null}
+      </Stack>
+    </Box>
+
+    <Box xcss={sectionStyle}>
+      <Stack space="space.250">
+        <SectionHeader title="DHL Express shipment creation" description="Create DHL shipments directly from Hardware tickets and write the returned tracking number and label back to Jira." />
+        <ToggleRow
+          label="Enable DHL shipment creation"
+          description="Keep this OFF until DHL test credentials, account and product configuration have passed validation."
+          warning={config.dhlShippingEnvironment === "production" ? "Production mode can create real chargeable shipments." : "Test mode is recommended until end-to-end validation is complete."}
+          checked={config.dhlShippingEnabled}
+          onChange={(e) => patch("dhlShippingEnabled", e.target.checked)}
+        />
+        <Box xcss={config.dhlShippingCredentialsConfigured ? statusOkStyle : statusWarnStyle}>
+          <Text>{config.dhlShippingCredentialsConfigured ? "DHL Express shipping credentials are configured securely." : "DHL Express shipping credentials are not configured."}</Text>
+        </Box>
+        <Inline space="space.200" shouldWrap>
+          <Box xcss={fieldColumnStyle}>
+            <FieldBlock label="Environment" help="Use Test until shipment creation, labels and Jira write-back have been proven.">
+              <Select
+                options={[{ label: "Test", value: "test" }, { label: "Production", value: "production" }]}
+                value={optionFor([{ label: "Test", value: "test" }, { label: "Production", value: "production" }], config.dhlShippingEnvironment)}
+                onChange={(option) => {
+                  const value = option?.value || "test";
+                  patch("dhlShippingEnvironment", value);
+                  patch("dhlShippingApiUrl", value === "production" ? "https://express.api.dhl.com/mydhlapi" : "https://express.api.dhl.com/mydhlapi/test");
+                  if (value === "production") patch("dhlShippingEnabled", false);
+                }}
+              />
+            </FieldBlock>
+          </Box>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="Shipping API URL"><Textfield value={config.dhlShippingApiUrl || ""} onChange={(e) => patch("dhlShippingApiUrl", e.target.value)} /></FieldBlock></Box>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="Shipping account number"><Textfield value={config.dhlShippingAccountNumber || ""} onChange={(e) => patch("dhlShippingAccountNumber", e.target.value)} /></FieldBlock></Box>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="DHL product code" help="The MyDHL product code used for shipment creation."><Textfield value={config.dhlProductCode || ""} onChange={(e) => patch("dhlProductCode", e.target.value)} /></FieldBlock></Box>
+        </Inline>
+        <ToggleRow label="Request pickup by default" description="Pre-select pickup on the Create DHL Shipment action. Agents can still change it before submitting." checked={config.dhlPickupRequestedByDefault} onChange={(e) => patch("dhlPickupRequestedByDefault", e.target.checked)} />
+        <Inline space="space.200" shouldWrap>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="DHL Express API username"><Textfield value={shippingUsername} onChange={(e) => setShippingUsername(e.target.value)} placeholder={config.dhlShippingCredentialsConfigured ? "Stored securely — enter only to replace" : "Enter MyDHL API username"} /></FieldBlock></Box>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="DHL Express API password"><Textfield type="password" value={shippingPassword} onChange={(e) => setShippingPassword(e.target.value)} placeholder={config.dhlShippingCredentialsConfigured ? "••••••••••••••••" : "Enter MyDHL API password"} /></FieldBlock></Box>
+        </Inline>
+        <Inline space="space.100" shouldWrap>
+          <Button appearance="primary" onClick={saveShippingCredentials} isDisabled={busy || !shippingUsername || !shippingPassword}>Save shipping credentials</Button>
+          <Button onClick={testShippingApi} isDisabled={busy || !config.dhlShippingCredentialsConfigured}>Test shipping connection</Button>
+          {config.dhlShippingCredentialsConfigured ? <Button appearance="subtle" onClick={clearShippingCredentials} isDisabled={busy}>Clear shipping credentials</Button> : null}
+        </Inline>
+        {shippingTest ? <Box xcss={shippingTest.ok ? statusOkStyle : statusWarnStyle}><Text>{shippingTest.message}</Text></Box> : null}
+        {config.dhlShippingEnvironment === "production" ? <Box xcss={statusWarnStyle}><Text>Production mode selected. Shipment creation is forced OFF when switching to Production; re-enable it only after validation and a deliberate go-live decision.</Text></Box> : <Box xcss={infoStyle}><Text>Test mode selected. DHL shipment creation remains isolated from production until you deliberately switch environment and re-enable it.</Text></Box>}
       </Stack>
     </Box>
 
     <Box xcss={infoStyle}>
       <Stack space="space.075">
         <Heading as="h3">Credential security</Heading>
-        <Text>The API key is stored in Forge encrypted secret storage. It is not returned to the browser after saving and is not kept in the normal app configuration.</Text>
-        <Text>The legacy environment-variable fallback has been removed, so each Jira installation must configure its own DHL credentials explicitly.</Text>
+        <Text>Tracking and shipping credentials are stored separately in Forge encrypted secret storage. They are never returned to the browser after saving and are not kept in normal app configuration.</Text>
       </Stack>
     </Box>
   </Stack>;
@@ -510,7 +622,7 @@ function App() {
 
     <Box xcss={sectionStyle}>
       <Stack space="space.200">
-        <SectionHeader title="Configuration validation" description="Check projects, statuses, issue/link types, fields, DHL credentials and automation safeguards." />
+        <SectionHeader title="Configuration validation" description="Check projects, statuses, issue/link types, fields, DHL tracking and shipping credentials, and automation safeguards." />
         <Inline space="space.100" shouldWrap>
           <Button appearance="primary" onClick={validate} isDisabled={busy}>Run validation</Button>
           <Button onClick={runPreview} isDisabled={busy}>Run read-only preview</Button>
@@ -530,7 +642,7 @@ function App() {
         <SectionHeader title="Operational preview" description="See what the current configuration would target without creating, updating or transitioning any issues." />
         {preview ? <>
           <Box xcss={preview.ok ? statusOkStyle : statusWarnStyle}>
-            <Text>Preview generated {preview.generatedAt}. HW auto-create: {preview.autoCreateEnabled ? "ON" : "OFF"}; workflow transitions: {preview.transitionsEnabled ? "ON" : "OFF"}; DHL API key: {preview.dhlApiKeyConfigured ? "configured" : "not configured"}.</Text>
+            <Text>Preview generated {preview.generatedAt}. HW auto-create: {preview.autoCreateEnabled ? "ON" : "OFF"}; workflow transitions: {preview.transitionsEnabled ? "ON" : "OFF"}; DHL tracking API key: {preview.dhlApiKeyConfigured ? "configured" : "not configured"}; DHL shipment creation: {preview.dhlShippingEnabled ? `${preview.dhlShippingEnvironment} / ${preview.dhlShippingCredentialsConfigured ? "credentials configured" : "credentials missing"}` : "OFF"}.</Text>
           </Box>
           {previewBlock("SD requests at handover status", preview.handover)}
           {previewBlock("HW tickets at dispatched status", preview.dispatchedHardware)}
@@ -554,7 +666,7 @@ function App() {
         <Inline spread="space-between" alignBlock="center" space="space.250" shouldWrap>
           <Stack space="space.075">
             <Heading as="h1">Delivery Manager</Heading>
-            <Text>Hardware handover, dispatch, DHL tracking and delivery resolution.</Text>
+            <Text>Hardware handover, DHL shipment creation, dispatch, tracking and delivery resolution.</Text>
             <Text>UI build: {UI_BUILD}</Text>
           </Stack>
           <Inline space="space.100" shouldWrap>
