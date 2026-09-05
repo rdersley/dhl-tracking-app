@@ -1,3 +1,5 @@
+export const MAX_DHL_LABEL_BASE64_CHARS = 6_000_000;
+
 export function cleanShipmentText(value, max = 200) {
   return String(value ?? "").trim().slice(0, max);
 }
@@ -34,6 +36,9 @@ export function validateShipmentDraft(draft = {}, config = {}) {
   if (!normalizePositiveNumber(draft.package?.widthCm)) errors.push("Package width must be greater than zero");
   if (!normalizePositiveNumber(draft.package?.heightCm)) errors.push("Package height must be greater than zero");
   requireText(config.dhlProductCode, "DHL product code");
+  if (draft.isCustomsDeclarable === true) {
+    errors.push("Customs-declarable shipments are not enabled yet; full customs line-item data is required before shipment creation");
+  }
 
   return { ok: errors.length === 0, errors };
 }
@@ -90,7 +95,7 @@ export function buildMyDhlShipmentPayload(draft = {}, config = {}, now = new Dat
         customerReferences: [{ value: cleanShipmentText(draft.reference, 100), typeCode: "CU" }],
         description: cleanShipmentText(draft.package.description || "Hardware", 200),
       }],
-      isCustomsDeclarable: draft.isCustomsDeclarable === true,
+      isCustomsDeclarable: false,
       description: cleanShipmentText(draft.contentsDescription || draft.package.description || "Hardware", 200),
       unitOfMeasurement: "metric",
     },
@@ -108,12 +113,15 @@ export function extractMyDhlShipmentResult(response = {}) {
   const dispatchConfirmationNumber = cleanShipmentText(response.dispatchConfirmationNumber, 100);
   const documents = Array.isArray(response.documents) ? response.documents : [];
   const label = documents.find((document) => /label/i.test(String(document?.typeCode || document?.type || ""))) || documents[0] || null;
+  const rawLabel = String(label?.content || "").trim();
+  const labelTooLarge = rawLabel.length > MAX_DHL_LABEL_BASE64_CHARS;
   return {
     ok: Boolean(trackingNumber),
     trackingNumber,
     dispatchConfirmationNumber,
-    labelBase64: cleanShipmentText(label?.content, 10_000_000),
+    labelBase64: labelTooLarge ? "" : rawLabel,
     labelFormat: cleanShipmentText(label?.imageFormat || label?.format || label?.typeCode, 50),
+    labelTooLarge,
     rawDocumentCount: documents.length,
   };
 }
