@@ -12,9 +12,21 @@ import { buildEligibleIssueJql, deliveryDecision, safeDhlRuntimeConfig } from ".
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function getDHL(trackingNumber, config, apiKey) {
+function validatedDhlUrl(value) {
+  const text = String(value || "").trim();
   try {
-    const baseUrl = String(config.dhlApiUrl || "https://api-eu.dhl.com/track/shipments").replace(/\?+$/, "");
+    const url = new URL(text);
+    if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "api-eu.dhl.com") return null;
+    return `${url.origin}${url.pathname}`.replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+async function getDHL(trackingNumber, config, apiKey) {
+  const baseUrl = validatedDhlUrl(config.dhlApiUrl);
+  if (!baseUrl) return { error: true, message: "DHL API URL is invalid" };
+  try {
     const separator = baseUrl.includes("?") ? "&" : "?";
     const response = await fetch(`${baseUrl}${separator}trackingNumber=${encodeURIComponent(trackingNumber)}`, {
       method: "GET",
@@ -116,7 +128,7 @@ async function handleDelivered(issueKey, shipment, config) {
       "This update was applied automatically by Delivery Manager.",
     ].join("\n"));
   }
-  if (config.transitionsEnabled) await transitionToStatus(issueKey, config.resolvedStatus, "Done");
+  if (config.transitionsEnabled) await transitionToStatus(issueKey, config.resolvedStatus, config.resolutionName || null);
 }
 
 async function handleNonDelivered(issue, analysis, config) {
