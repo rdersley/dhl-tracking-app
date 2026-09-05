@@ -22,6 +22,7 @@ function App() {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
+  const [confirmProduction, setConfirmProduction] = useState(false);
   const [draft, setDraft] = useState({
     reference: "",
     shipper: { ...emptyParty },
@@ -44,6 +45,7 @@ function App() {
     if (!issueKey) return;
     setBusy(true);
     setResult(null);
+    setConfirmProduction(false);
     try {
       const response = await invoke("checkDhlShipment", { issueKey });
       setState(response);
@@ -67,11 +69,7 @@ function App() {
     setBusy(true);
     setResult(null);
     try {
-      const response = await invoke("createDhlShipment", {
-        issueKey,
-        draft,
-        confirmProduction: state?.shippingEnvironment !== "production" || true,
-      });
+      const response = await invoke("createDhlShipment", { issueKey, draft, confirmProduction });
       setResult(response);
       if (response?.created && response?.trackingNumber) {
         setState((current) => ({ ...(current || {}), existingTracking: response.trackingNumber, shipmentRecorded: true }));
@@ -97,13 +95,14 @@ function App() {
   }
 
   const existing = state?.existingTracking;
-  const ready = state?.shippingEnabled && state?.credentialsConfigured && state?.accountConfigured && state?.productConfigured && !existing;
+  const isProduction = state?.shippingEnvironment === "production";
+  const ready = state?.shippingEnabled && state?.credentialsConfigured && state?.accountConfigured && state?.productConfigured && !existing && (!isProduction || confirmProduction);
 
   return (
     <Stack space="space.200">
       <Heading as="h3">Create DHL Shipment</Heading>
       <Text>Hardware ticket: {issueKey}</Text>
-      <Text>Environment: {state?.shippingEnvironment === "production" ? "Production" : "DHL test"}</Text>
+      <Text>Environment: {isProduction ? "Production" : "DHL test"}</Text>
 
       {existing && (
         <SectionMessage appearance="warning" title="Shipment already exists">
@@ -115,6 +114,11 @@ function App() {
       {!state?.credentialsConfigured && <SectionMessage appearance="warning" title="DHL credentials missing"><Text>Configure DHL Express shipping credentials in Delivery Manager settings.</Text></SectionMessage>}
       {!state?.accountConfigured && <SectionMessage appearance="warning" title="DHL account missing"><Text>Configure the DHL shipping account number.</Text></SectionMessage>}
       {!state?.productConfigured && <SectionMessage appearance="warning" title="DHL product missing"><Text>Configure a DHL product code before creating shipments.</Text></SectionMessage>}
+      {isProduction && !existing && (
+        <SectionMessage appearance="warning" title="Live DHL shipment">
+          <Text>This will create a real shipment on the configured DHL Express account. Review the sender, recipient and package details before continuing.</Text>
+        </SectionMessage>
+      )}
 
       {!existing && (
         <Stack space="space.150">
@@ -153,6 +157,7 @@ function App() {
           <Label labelFor="description">Description</Label><Textfield id="description" value={draft.package.description} onChange={(e) => patchPackage("description", e.target.value)} />
           <Checkbox label="Request DHL pickup" isChecked={draft.pickupRequested} onChange={(e) => setDraft((c) => ({ ...c, pickupRequested: e.target.checked }))} />
           <Checkbox label="Customs declaration required" isChecked={draft.isCustomsDeclarable} onChange={(e) => setDraft((c) => ({ ...c, isCustomsDeclarable: e.target.checked }))} />
+          {isProduction && <Checkbox label="I confirm these details are correct and I want to create a LIVE DHL shipment" isChecked={confirmProduction} onChange={(e) => setConfirmProduction(e.target.checked)} />}
         </Stack>
       )}
 
@@ -168,7 +173,7 @@ function App() {
       )}
 
       <ButtonGroup>
-        {!existing && <Button appearance="primary" onClick={createShipment} isDisabled={busy || !ready}>{busy ? "Creating…" : state?.shippingEnvironment === "production" ? "Create LIVE DHL Shipment" : "Create DHL Test Shipment"}</Button>}
+        {!existing && <Button appearance="primary" onClick={createShipment} isDisabled={busy || !ready}>{busy ? "Creating…" : isProduction ? "Create LIVE DHL Shipment" : "Create DHL Test Shipment"}</Button>}
         <Button onClick={() => view.close()} appearance="subtle">Close</Button>
       </ButtonGroup>
     </Stack>
