@@ -7,6 +7,10 @@ import {
   setDhlApiKey,
   clearDhlApiKey,
   getDhlApiKey,
+  getDhlShippingCredentials,
+  hasDhlShippingCredentials,
+  setDhlShippingCredentials,
+  clearDhlShippingCredentials,
 } from "./config.js";
 import { buildEligibleIssueJql } from "./dhl-config-core.mjs";
 import { getDeliveryManagerHealth } from "./health.js";
@@ -86,7 +90,11 @@ async function searchPreview(jql, maxResults = 25) {
   }
 }
 
-resolver.define("getConfig", async () => ({ ...(await getDeliveryManagerConfig()), dhlApiKeyConfigured: await hasDhlApiKey() }));
+resolver.define("getConfig", async () => ({
+  ...(await getDeliveryManagerConfig()),
+  dhlApiKeyConfigured: await hasDhlApiKey(),
+  dhlShippingCredentialsConfigured: await hasDhlShippingCredentials(),
+}));
 resolver.define("saveConfig", async ({ payload }) => ({ ok: true, config: await saveDeliveryManagerConfig(payload?.config || {}) }));
 resolver.define("getRuntimeHealth", async () => getDeliveryManagerHealth());
 
@@ -102,6 +110,19 @@ resolver.define("saveDhlCredentials", async ({ payload }) => {
   return { ok: true, configured: true, message: "DHL API key saved securely." };
 });
 
+resolver.define("saveDhlShippingCredentials", async ({ payload }) => {
+  const clear = payload?.clear === true;
+  if (clear) {
+    await clearDhlShippingCredentials();
+    return { ok: true, configured: false, message: "DHL Express shipping credentials cleared." };
+  }
+  const username = String(payload?.username || "").trim();
+  const password = String(payload?.password || "");
+  if (!username || !password) return { ok: false, configured: await hasDhlShippingCredentials(), message: "Enter both the DHL Express API username and password." };
+  await setDhlShippingCredentials(username, password);
+  return { ok: true, configured: true, message: "DHL Express shipping credentials saved securely." };
+});
+
 resolver.define("testDhlConnection", async ({ payload }) => {
   const config = { ...(await getDeliveryManagerConfig()), ...(payload?.config || {}) };
   const apiKey = await getDhlApiKey();
@@ -113,7 +134,7 @@ resolver.define("testDhlConnection", async ({ payload }) => {
       return { ok: false, message: "The DHL API URL must use https://api-eu.dhl.com." };
     }
     const separator = baseUrl.includes("?") ? "&" : "?";
-    const response = await fetch(`${baseUrl}${separator}trackingNumber=0000000000`, {
+    const response = await api.fetch(`${baseUrl}${separator}trackingNumber=0000000000`, {
       method: "GET",
       headers: { "DHL-API-Key": apiKey, Accept: "application/json" },
     });
@@ -123,6 +144,29 @@ resolver.define("testDhlConnection", async ({ payload }) => {
     return { ok: true, status: response.status, message: `DHL API connection reached successfully (HTTP ${response.status}).` };
   } catch (error) {
     return { ok: false, message: `DHL API test failed: ${String(error)}` };
+  }
+});
+
+resolver.define("testDhlShippingConnection", async ({ payload }) => {
+  const config = { ...(await getDeliveryManagerConfig()), ...(payload?.config || {}) };
+  const credentials = await getDhlShippingCredentials();
+  if (!credentials.username || !credentials.password) return { ok: false, message: "No DHL Express shipping credentials are configured." };
+  const baseUrl = String(config.dhlShippingApiUrl || "").replace(/\/$/, "");
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== "express.api.dhl.com" || !parsed.pathname.startsWith("/mydhlapi")) {
+      return { ok: false, message: "The DHL shipping API URL must use the express.api.dhl.com MyDHL API." };
+    }
+    const auth = Buffer.from(`${credentials.username}:${credentials.password}`).toString("base64");
+    const response = await api.fetch(`${baseUrl}/rates`, {
+      method: "GET",
+      headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
+    });
+    if (response.status === 401 || response.status === 403) return { ok: false, status: response.status, message: "DHL Express rejected the shipping credentials." };
+    if (response.status >= 500) return { ok: false, status: response.status, message: `DHL Express service returned HTTP ${response.status}.` };
+    return { ok: true, status: response.status, message: `DHL Express shipping API reached successfully (HTTP ${response.status}).` };
+  } catch (error) {
+    return { ok: false, message: `DHL Express shipping test failed: ${String(error)}` };
   }
 });
 
@@ -166,6 +210,9 @@ resolver.define("getOperationalPreview", async ({ payload }) => {
     transitionsEnabled: config.transitionsEnabled !== false,
     commentsEnabled: config.commentsEnabled !== false,
     dhlApiKeyConfigured: await hasDhlApiKey(),
+    dhlShippingEnabled: config.dhlShippingEnabled === true,
+    dhlShippingEnvironment: config.dhlShippingEnvironment,
+    dhlShippingCredentialsConfigured: await hasDhlShippingCredentials(),
     queries: { handoverJql, dispatchedHwJql, dhlJql },
     handover,
     dispatchedHardware,
@@ -254,6 +301,18 @@ resolver.define("validateConfig", async ({ payload }) => {
   checks.push({ key: "DHL API URL", ok: apiUrlOk, message: apiUrlOk ? config.dhlApiUrl : "Configure a valid api-eu.dhl.com HTTPS endpoint" });
   const apiKeyOk = await hasDhlApiKey();
   checks.push({ key: "DHL API key", ok: apiKeyOk, message: apiKeyOk ? "Configured securely" : "Not configured" });
+
+  if (config.dhlShippingEnabled) {
+    const shippingCredentialsOk = await hasDhlShippingCredentials();
+    const shippingUrlOk = (() => { try { const u = new URL(config.dhlShippingApiUrl); return u.protocol === "https:" && u.hostname.toLowerCase() === "express.api.dhl.com" && u.pathname.startsWith("/mydhlapi"); } catch { return false; } })();
+    checks.push({ key: "DHL shipment creation", ok: true, message: `${config.dhlShippingEnvironment === "production" ? "PRODUCTION" : "TEST"} mode enabled` });
+    checks.push({ key: "DHL shipping API URL", ok: shippingUrlOk, message: shippingUrlOk ? config.dhlShippingApiUrl : "Configure a valid express.api.dhl.com MyDHL API endpoint" });
+    checks.push({ key: "DHL shipping credentials", ok: shippingCredentialsOk, message: shippingCredentialsOk ? "Configured securely" : "Not configured" });
+    checks.push({ key: "DHL shipping account", ok: Boolean(config.dhlShippingAccountNumber || config.dhlAccountNumber), message: config.dhlShippingAccountNumber || config.dhlAccountNumber || "Not configured" });
+    checks.push({ key: "DHL product code", ok: Boolean(config.dhlProductCode), message: config.dhlProductCode || "Not configured" });
+  } else {
+    checks.push({ key: "DHL shipment creation", ok: true, message: "OFF — tracking-only mode" });
+  }
 
   if (config.clientRestrictionEnabled) {
     const valuesOk = Array.isArray(config.clientValues) && config.clientValues.length > 0;
