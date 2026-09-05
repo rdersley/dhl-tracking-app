@@ -42,7 +42,7 @@ async function recordShipmentProperty(issueKey, result) {
 }
 
 async function getHardwareIssue(issueKey, config) {
-  const fields = ["summary", "project", "status", config.trackingField, config.dateSentField].filter(Boolean);
+  const fields = ["summary", "project", "status", config.trackingField, config.dateSentField, config.deliveryStatusField].filter(Boolean);
   return jiraJson(route`/rest/api/3/issue/${issueKey}?fields=${fields.join(",")}`);
 }
 
@@ -75,6 +75,7 @@ async function addPrivateComment(issueKey, body) {
 }
 
 async function attachLabel(issueKey, result) {
+  if (result.labelTooLarge) return { ok: false, skipped: true, error: "DHL label exceeded the Delivery Manager attachment safety limit." };
   if (!result.labelBase64) return { ok: true, skipped: true };
   try {
     const bytes = Buffer.from(result.labelBase64, "base64");
@@ -107,14 +108,16 @@ async function inspect(issueKey, config) {
   }
 
   const recorded = await readShipmentProperty(issueKey);
-  const existingTracking = String(issue?.fields?.[config.trackingField] || recorded?.trackingNumber || "").trim();
+  const fieldTracking = String(issue?.fields?.[config.trackingField] || "").trim();
+  const recordedTracking = String(recorded?.trackingNumber || "").trim();
   return {
     ok: true,
     issueKey,
     summary: issue?.fields?.summary || "",
     status: issue?.fields?.status?.name || "",
-    existingTracking,
-    shipmentRecorded: Boolean(recorded?.trackingNumber),
+    fieldTracking,
+    existingTracking: fieldTracking || recordedTracking,
+    shipmentRecorded: Boolean(recordedTracking),
     recorded,
     shippingEnabled: config.dhlShippingEnabled === true,
     shippingEnvironment: config.dhlShippingEnvironment,
@@ -122,6 +125,34 @@ async function inspect(issueKey, config) {
     accountConfigured: Boolean(config.dhlShippingAccountNumber || config.dhlAccountNumber),
     productConfigured: Boolean(config.dhlProductCode),
     pickupRequestedByDefault: config.dhlPickupRequestedByDefault === true,
+  };
+}
+
+async function repairRecordedShipment(issueKey, state, config) {
+  const trackingNumber = String(state.recorded?.trackingNumber || "").trim();
+  if (!trackingNumber) return { ok: false, duplicate: true, error: "A shipment record exists but has no tracking number. Manual review is required." };
+
+  const repairResult = { trackingNumber };
+  const updateResult = await jiraJson(route`/rest/api/3/issue/${issueKey}`, {
+    method: "PUT",
+    body: JSON.stringify({ fields: buildShipmentWriteback(repairResult, config) }),
+  });
+  const transitionResult = config.transitionsEnabled ? await transitionIssue(issueKey, config.hwDispatchedStatus) : { ok: true, skipped: true };
+
+  if (config.commentsEnabled && (updateResult.ok || transitionResult.ok)) {
+    await addPrivateComment(issueKey, `Delivery Manager repaired Jira from the existing DHL shipment record. Tracking number: ${trackingNumber}. No new DHL shipment was created.`);
+  }
+
+  return {
+    ok: updateResult.ok && transitionResult.ok,
+    created: false,
+    repaired: true,
+    duplicatePrevented: true,
+    trackingNumber,
+    jiraUpdated: updateResult.ok,
+    transitioned: transitionResult.ok && !transitionResult.skipped,
+    transitionError: transitionResult.ok ? null : transitionResult.error,
+    error: !updateResult.ok ? `Existing DHL shipment was preserved, but Jira field repair failed: ${updateResult.error}` : !transitionResult.ok ? `Existing DHL shipment was preserved, but Jira transition repair failed: ${transitionResult.error}` : null,
   };
 }
 
@@ -150,8 +181,9 @@ resolver.define("createDhlShipment", async ({ payload }) => {
 
   const state = await inspect(issueKey, config);
   if (!state.ok) return state;
-  if (state.existingTracking || state.shipmentRecorded) {
-    return { ok: false, duplicate: true, existingTracking: state.existingTracking || state.recorded?.trackingNumber, error: "A DHL shipment is already recorded for this hardware ticket." };
+  if (state.shipmentRecorded) return repairRecordedShipment(issueKey, state, config);
+  if (state.fieldTracking) {
+    return { ok: false, duplicate: true, existingTracking: state.fieldTracking, error: "A tracking number already exists on this hardware ticket. Delivery Manager will not create another DHL shipment without manual review." };
   }
 
   const validation = validateShipmentDraft(draft, config);
@@ -206,6 +238,7 @@ resolver.define("createDhlShipment", async ({ payload }) => {
     const parts = [`DHL shipment created. Tracking number: ${result.trackingNumber}.`];
     if (result.dispatchConfirmationNumber) parts.push(`Dispatch confirmation: ${result.dispatchConfirmationNumber}.`);
     if (labelResult.ok && !labelResult.skipped) parts.push("Shipping label attached to this issue.");
+    if (result.labelTooLarge) parts.push("DHL returned a label that exceeded the Delivery Manager attachment safety limit, so it was not attached.");
     await addPrivateComment(issueKey, parts.join(" "));
   }
 
