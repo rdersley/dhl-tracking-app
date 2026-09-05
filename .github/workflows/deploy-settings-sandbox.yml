@@ -32,6 +32,6 @@ jobs:
         run: forge deploy --environment production --non-interactive --approve MAJOR_VERSION_RULE
       - name: Upgrade Nuvriqo installation to major v3
         run: forge install --upgrade --site https://nuvriqo.atlassian.net --product jira --major-version 3 --environment production --non-interactive --confirm-scopes
-      - name: Install combined RC on Retail in Motion sandbox
+      - name: Upgrade combined RC on Retail in Motion sandbox
         if: contains(github.event.head_commit.message, '[deploy work-sandbox]')
-        run: forge install --site https://retailinmotion-sandbox1.atlassian.net --product jira --environment production --non-interactive --confirm-scopes
+        run: forge install --upgrade --site https://retailinmotion-sandbox1.atlassian.net --product jira --major-version 3 --environment production --non-interactive --confirm-scopes
