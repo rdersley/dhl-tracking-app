@@ -158,11 +158,11 @@ async function reconcileDispatchedHardware(config) {
 async function createMissingHardwareTickets(config) {
   if (!config.createEnabled) {
     console.log("HW-SYNC: automatic HW ticket creation is disabled; reconciliation-only mode");
-    return { checked: 0, created: 0, skippedDuplicates: 0 };
+    return { checked: 0, created: 0, skippedDuplicates: 0, autoCreateEnabled: false };
   }
   if (!config.hwIssueType) {
     console.log("HW-SYNC: auto-creation enabled but HW issue type is not configured");
-    return { checked: 0, created: 0, skippedDuplicates: 0 };
+    return { checked: 0, created: 0, skippedDuplicates: 0, autoCreateEnabled: true, blocked: "hw-issue-type-not-configured" };
   }
 
   const mappedSources = (config.hwFieldMappings || []).map((item) => item.source).filter(Boolean);
@@ -175,6 +175,7 @@ async function createMissingHardwareTickets(config) {
 
   let created = 0;
   let skippedDuplicates = 0;
+  let safeguardStopped = false;
 
   for (const sdIssue of sdIssues) {
     const recordedKeys = await getRecordedHardwareKeys(sdIssue.key);
@@ -184,7 +185,6 @@ async function createMissingHardwareTickets(config) {
       continue;
     }
 
-    // Re-read links immediately before the destructive create to reduce race risk.
     const fresh = await getIssue(sdIssue.key, sourceFields);
     if (!fresh) continue;
     const freshRecordedKeys = await getRecordedHardwareKeys(sdIssue.key);
@@ -208,12 +208,14 @@ async function createMissingHardwareTickets(config) {
     const createdIssue = await response.json();
     if (!createdIssue?.key) {
       console.log(`HW-SYNC: Jira created an HW issue for ${sdIssue.key} but returned no key; stopping auto-create cycle`);
+      safeguardStopped = true;
       break;
     }
 
     const recordResult = await recordHardwareKey(sdIssue.key, createdIssue.key);
     if (!recordResult.ok) {
       console.log(`HW-SYNC: CRITICAL - created ${createdIssue.key} for ${sdIssue.key} but could not record duplicate safeguard; auto-create cycle stopped`);
+      safeguardStopped = true;
       break;
     }
 
@@ -238,7 +240,7 @@ async function createMissingHardwareTickets(config) {
     }
   }
 
-  return { checked: sdIssues.length, created, skippedDuplicates };
+  return { checked: sdIssues.length, created, skippedDuplicates, autoCreateEnabled: true, safeguardStopped };
 }
 
 export async function runHardwareSync() {
@@ -247,11 +249,15 @@ export async function runHardwareSync() {
     const config = await getDeliveryManagerConfig();
     const dispatch = await reconcileDispatchedHardware(config);
     const creation = await createMissingHardwareTickets(config);
+    const result = { ok: !creation.safeguardStopped, dispatch, creation };
     console.log(
       `HW-SYNC: complete; dispatched checked=${dispatch.checked}, repaired=${dispatch.repaired}, ` +
       `sent-to-hardware checked=${creation.checked}, created=${creation.created}, duplicate-skips=${creation.skippedDuplicates}`
     );
+    return result;
   } catch (error) {
-    console.log(`HW-SYNC: failed: ${String(error)}`);
+    const result = { ok: false, error: String(error) };
+    console.log(`HW-SYNC: failed: ${result.error}`);
+    return result;
   }
 }
