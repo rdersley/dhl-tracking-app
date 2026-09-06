@@ -11,6 +11,7 @@ import {
   extractMyDhlShipmentResult,
   validateShipmentDraft,
 } from "./shipment-core.mjs";
+import { classifyDhlShipmentHttpFailure } from "./dhl-shipping-http-core.mjs";
 
 const resolver = new Resolver();
 const SHIPMENT_PROPERTY = "nuvriqo.delivery-manager.dhl-shipment";
@@ -210,12 +211,28 @@ resolver.define("createDhlShipment", async ({ payload }) => {
       body: JSON.stringify(requestBody),
     });
   } catch (error) {
-    return { ok: false, dhlRequestFailed: true, error: `DHL shipment request failed: ${String(error)}` };
+    return {
+      ok: false,
+      dhlRequestFailed: true,
+      ambiguousDeliveryState: true,
+      retryable: true,
+      error: "The DHL request failed before Delivery Manager received a response. Check MyDHL before retrying because the shipment request may have reached DHL.",
+    };
   }
 
   if (!response.ok) {
     const text = await response.text();
-    return { ok: false, dhlRequestFailed: true, status: response.status, error: `DHL shipment creation failed (${response.status}): ${text.slice(0, 1500)}` };
+    const failure = classifyDhlShipmentHttpFailure(response.status, text, response.headers?.get?.("retry-after") || "");
+    return {
+      ok: false,
+      dhlRequestFailed: true,
+      status: response.status,
+      failureKind: failure.kind,
+      retryable: failure.retryable,
+      retryAfter: failure.retryAfter || null,
+      ambiguousDeliveryState: response.status >= 500,
+      error: failure.message,
+    };
   }
 
   const dhlResponse = await response.json();
