@@ -147,8 +147,8 @@ async function handleNonDelivered(issue, analysis, config) {
   return { ok: true, updated, transitioned, decision };
 }
 
-export async function runConfiguredDhl() {
-  const config = safeDhlRuntimeConfig(await getDeliveryManagerConfig());
+export async function runConfiguredDhl(configOverride = null) {
+  const config = safeDhlRuntimeConfig(configOverride || await getDeliveryManagerConfig());
   const apiKey = await getDhlApiKey();
   if (!apiKey) {
     console.log("DHL: API key is not configured in Delivery Manager settings");
