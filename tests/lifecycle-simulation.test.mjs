@@ -134,3 +134,25 @@ test("delivered detection wins at the runtime decision boundary", () => {
   const analysis = analyseDHLStatuses(collectStatusStrings({ events: [{ status: "Delivered" }] }));
   assert.equal(analysis.delivered, true);
 });
+
+test("past customs history does not hold a shipment that is now out for delivery", () => {
+  const shipment = {
+    status: { statusCode: "transit", description: "With delivery courier" },
+    events: [
+      { timestamp: "2026-09-24T08:10:00", description: "With delivery courier" },
+      { timestamp: "2026-09-23T15:00:00", description: "Customs clearance status updated" },
+    ],
+  };
+  const decision = deliveryDecision(analyseDHLStatuses(collectStatusStrings(shipment)), config);
+  assert.deepEqual(decision, { workflowStatus: "Out for Delivery", deliveryStatus: "Out for Delivery" });
+});
+
+test("could-not-be-delivered is routed to the failure workflow, never resolved as delivered", () => {
+  const shipment = {
+    status: { statusCode: "failure", description: "The shipment could not be delivered" },
+    events: [{ timestamp: "2026-09-24T12:00:00", description: "The shipment could not be delivered" }],
+  };
+  const analysis = analyseDHLStatuses(collectStatusStrings(shipment));
+  assert.equal(analysis.delivered, false);
+  assert.deepEqual(deliveryDecision(analysis, config), { workflowStatus: "Delivery Failed", deliveryStatus: "Delivery Failed" });
+});
