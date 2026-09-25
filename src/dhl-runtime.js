@@ -7,6 +7,7 @@ import {
   collectStatusStrings,
   analyseDHLStatuses,
   compareIssuesForFairRotation,
+  latestDhlEvent,
 } from "./core.mjs";
 import { buildEligibleIssueJql, deliveryDecision, safeDhlRuntimeConfig } from "./dhl-config-core.mjs";
 
@@ -109,7 +110,7 @@ async function searchEligibleIssues(config) {
 }
 
 async function handleDelivered(issueKey, shipment, config) {
-  const latest = shipment?.events?.[0];
+  const latest = latestDhlEvent(shipment);
   const deliveredDate = latest?.timestamp?.split("T")[0] ?? null;
   const signedFor = shipment?.proofOfDelivery?.recipientName || latest?.receiverName || latest?.signature || "Unknown";
   const fields = {
