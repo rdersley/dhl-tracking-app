@@ -1,6 +1,8 @@
 import Resolver from "@forge/resolver";
 import api, { route } from "@forge/api";
 import { getDeliveryManagerConfig } from "./config.js";
+import { guardIssueResolver, requireProjectPermission, AccessDeniedError } from "./access.js";
+import { missingSettings } from "./access-core.mjs";
 import {
   buildHardwareCreateFields,
   buildHardwareDuplicateState,
@@ -78,21 +80,40 @@ async function inspect(issueKey, config) {
   };
 }
 
-resolver.define("checkHardwareTicket", async ({ payload }) => {
-  const issueKey = String(payload?.issueKey || "").trim();
-  if (!issueKey) return { ok: false, error: "No Jira issue was supplied." };
+// Every resolver below acts with api.asApp(), so guardIssueResolver() first
+// confirms that the *calling user* can browse and edit the issue in the payload.
+// Viewing the action only needs BROWSE_PROJECTS; creating needs EDIT_ISSUES too.
+function notConfigured(config) {
+  const missing = missingSettings(config, "hardwareAction");
+  return missing.length
+    ? { ok: false, notConfigured: true, missing, error: "Hardware ticket creation is not configured yet. A Jira admin must set the service project, hardware project and hardware issue type in Delivery Manager settings." }
+    : null;
+}
+
+resolver.define("checkHardwareTicket", guardIssueResolver(async ({ payload }) => {
+  const issueKey = String(payload?.issueKey || "").trim().toUpperCase();
   const config = await getDeliveryManagerConfig();
+  const unconfigured = notConfigured(config);
+  if (unconfigured) return unconfigured;
   return inspect(issueKey, config);
-});
+}, { permissions: ["BROWSE_PROJECTS"] }));
 
-resolver.define("createHardwareTicket", async ({ payload }) => {
-  const issueKey = String(payload?.issueKey || "").trim();
+resolver.define("createHardwareTicket", guardIssueResolver(async ({ payload }) => {
+  const issueKey = String(payload?.issueKey || "").trim().toUpperCase();
   const force = payload?.force === true;
-  if (!issueKey) return { ok: false, error: "No Jira issue was supplied." };
 
   const config = await getDeliveryManagerConfig();
-  if (!config.hwProject) return { ok: false, error: "Hardware project is not configured." };
-  if (!config.hwIssueType) return { ok: false, error: "Hardware issue type is not configured." };
+  const unconfigured = notConfigured(config);
+  if (unconfigured) return unconfigured;
+
+  // The app creates the hardware ticket as itself, so also make sure the user
+  // could have created an issue in the hardware project themselves.
+  try {
+    await requireProjectPermission(config.hwProject, "CREATE_ISSUES");
+  } catch (error) {
+    if (error instanceof AccessDeniedError) return { ok: false, forbidden: true, error: error.message };
+    throw error;
+  }
 
   const state = await inspect(issueKey, config);
   if (!state.ok) return state;
@@ -156,6 +177,6 @@ resolver.define("createHardwareTicket", async ({ payload }) => {
     forcedAdditional: force && state.duplicate,
     previousKeys: state.existingKeys,
   };
-});
+}, { permissions: ["BROWSE_PROJECTS", "EDIT_ISSUES"] }));
 
 export const handler = resolver.getDefinitions();
