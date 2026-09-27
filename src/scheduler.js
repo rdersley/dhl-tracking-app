@@ -3,9 +3,26 @@ import { runHardwareSync } from "./hardware-sync.js";
 import { shouldRunDhl } from "./scheduler-core.mjs";
 import { getDeliveryManagerConfig } from "./config.js";
 import { saveDeliveryManagerHealth } from "./health.js";
+import { schedulerLicenceState } from "./access.js";
 
-export async function runCombinedScheduler() {
+export async function runCombinedScheduler(event = {}, context = {}) {
   const lastRunStartedAt = new Date().toISOString();
+
+  // Paid app: production installs without an active Marketplace licence do no
+  // scheduled work (fail closed). Development/staging always run.
+  const licence = schedulerLicenceState(context?.license ? context : event?.context || {});
+  if (licence.enforced && !licence.active) {
+    console.log("Delivery Manager: Marketplace licence inactive; scheduled cycle skipped");
+    return {
+      lastRunStartedAt,
+      lastRunCompletedAt: new Date().toISOString(),
+      ok: false,
+      skipped: true,
+      reason: "licence-inactive",
+      hardware: { ok: false, skipped: true, reason: "licence-inactive" },
+      dhl: { ok: false, skipped: true, reason: "licence-inactive" },
+    };
+  }
 
   // Forge invokes this trigger every five minutes. Hardware reconciliation is a
   // safety-net rather than the primary handover mechanism, so running the full

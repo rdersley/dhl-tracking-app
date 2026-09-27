@@ -115,3 +115,32 @@ test("an empty configuration leaves every feature unconfigured", () => {
   }
   assert.deepEqual(missingSettings({ hwProject: "HW", trackingField: "customfield_1" }, "shipmentAction"), []);
 });
+
+test("licence: production requires an explicitly active licence", async () => {
+  const { licenceState } = await import("../src/access-core.mjs");
+  assert.deepEqual(licenceState({ environmentType: "PRODUCTION", license: { isActive: true } }), { enforced: true, active: true, environmentType: "PRODUCTION" });
+  assert.equal(licenceState({ environmentType: "PRODUCTION", license: { isActive: false } }).active, false);
+  assert.equal(licenceState({ environmentType: "PRODUCTION" }).active, false);
+  assert.equal(licenceState({ environmentType: "production", license: { active: true } }).active, true);
+});
+
+test("licence: development and staging are never blocked", async () => {
+  const { licenceState } = await import("../src/access-core.mjs");
+  for (const environmentType of ["DEVELOPMENT", "STAGING"]) {
+    assert.deepEqual(licenceState({ environmentType }), { enforced: false, active: true, environmentType });
+  }
+});
+
+test("issue resolver refuses an unlicensed production install before calling Jira", async () => {
+  const { guards, calls } = fakeJira({ "issue:HW-5": ["BROWSE_PROJECTS", "EDIT_ISSUES"] });
+  let ran = false;
+  const handler = guards.guardIssueResolver(async () => { ran = true; });
+  const result = await handler({ payload: { issueKey: "HW-5" }, context: { environmentType: "PRODUCTION", license: { isActive: false } } });
+  assert.equal(ran, false);
+  assert.equal(result.licenceInactive, true);
+  assert.equal(calls.length, 0);
+
+  const licensed = await handler({ payload: { issueKey: "HW-5" }, context: { environmentType: "PRODUCTION", license: { isActive: true } } });
+  assert.equal(ran, true);
+  assert.equal(licensed, undefined);
+});

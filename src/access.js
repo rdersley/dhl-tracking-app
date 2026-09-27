@@ -1,4 +1,4 @@
-// Forge wiring for the authorisation guards in access-core.mjs.
+// Forge wiring for the authorisation and licence guards in access-core.mjs.
 //
 // The resolvers call Jira with api.asApp(), which uses the app's own (broad)
 // permissions. Forge does not check what the *calling user* may do in that
@@ -6,8 +6,8 @@
 // the user (api.asUser()) via /rest/api/3/mypermissions and refuse the request
 // unless the required permissions are held.
 
-import api, { route } from "@forge/api";
-import { AccessDeniedError, createAccessGuards } from "./access-core.mjs";
+import api, { route, getAppContext } from "@forge/api";
+import { AccessDeniedError, createAccessGuards, licenceState } from "./access-core.mjs";
 
 async function requestMyPermissions(permissions, scope = {}) {
   const list = permissions.join(",");
@@ -21,11 +21,27 @@ async function requestMyPermissions(permissions, scope = {}) {
   return { ok: true, status: response.status, data: await response.json() };
 }
 
-export { AccessDeniedError };
+export { AccessDeniedError, licenceState };
 export const {
   requireJiraAdmin,
   requireIssueAccess,
   requireProjectPermission,
+  requireActiveLicence,
   guardIssueResolver,
   guardAdminResolver,
 } = createAccessGuards({ requestMyPermissions });
+
+// Scheduled triggers have no resolver context, so read the licence from the
+// trigger's own context (when present) or from getAppContext().
+export function schedulerLicenceState(triggerContext = {}) {
+  let appContext = {};
+  try {
+    appContext = getAppContext() || {};
+  } catch {
+    appContext = {};
+  }
+  return licenceState({
+    environmentType: triggerContext?.environmentType || appContext?.environmentType,
+    license: triggerContext?.license || appContext?.license,
+  });
+}

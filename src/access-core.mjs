@@ -1,4 +1,5 @@
-// Authorisation and "is this configured?" logic for Delivery Manager.
+// Authorisation, Marketplace licence and "is this configured?" logic for
+// Delivery Manager.
 //
 // This module has no Forge imports so it can be unit tested with `node --test`.
 // The Forge-specific call to Jira (api.asUser() + /rest/api/3/mypermissions)
@@ -20,6 +21,30 @@ export function missingPermissions(data, required = []) {
   const granted = data?.permissions || {};
   return required.filter((key) => granted?.[key]?.havePermission !== true);
 }
+
+// Marketplace licence state for a Forge invocation.
+//
+// - Production installs must hold an active licence. This fails closed:
+//   anything other than an explicit `true` (including a missing licence
+//   object) counts as unlicensed.
+// - Development and staging installs are always allowed, so the app can be
+//   tested outside a Marketplace subscription.
+//
+// Forge exposes the flag as `license.isActive`; `active` is accepted too.
+// Requires `app.licensing.enabled: true` in manifest.yml, otherwise Forge
+// never sends a licence and production would always be refused.
+export function licenceState(context = {}) {
+  const environmentType = String(context?.environmentType || "").trim().toUpperCase();
+  const production = environmentType === "PRODUCTION";
+  const active = context?.license?.isActive === true || context?.license?.active === true;
+  return {
+    enforced: production,
+    active: production ? active : true,
+    environmentType: environmentType || "UNKNOWN",
+  };
+}
+
+export const LICENCE_INACTIVE_MESSAGE = "Delivery Manager needs an active Marketplace licence. Ask your Jira administrator to check the app subscription.";
 
 // Raised when the user (or installation) is not allowed to do something.
 export class AccessDeniedError extends Error {
@@ -86,14 +111,27 @@ export function createAccessGuards({ requestMyPermissions }) {
     }
   }
 
+  // Production installs must hold an active licence (see licenceState()).
+  function requireActiveLicence(context = {}) {
+    const licence = licenceState(context);
+    if (licence.enforced && !licence.active) {
+      throw new AccessDeniedError(LICENCE_INACTIVE_MESSAGE, { licenceInactive: true });
+    }
+    return licence;
+  }
+
   // Wraps an issue-action resolver. Denials come back as a normal result the
-  // issue-action UIs already render ({ ok: false, error }).
+  // issue-action UIs already render ({ ok: false, error }). The licence is
+  // checked first so an unlicensed site makes no Jira calls at all.
   function guardIssueResolver(fn, { permissions } = {}) {
     return async (request) => {
       try {
+        requireActiveLicence(request?.context);
         await requireIssueAccess(request?.payload?.issueKey, request?.context, permissions);
       } catch (error) {
-        if (error instanceof AccessDeniedError) return { ok: false, forbidden: true, error: error.message };
+        if (error instanceof AccessDeniedError) {
+          return { ok: false, forbidden: true, licenceInactive: error.licenceInactive === true, error: error.message };
+        }
         throw error;
       }
       return fn(request);
@@ -101,7 +139,9 @@ export function createAccessGuards({ requestMyPermissions }) {
   }
 
   // Wraps an admin-page resolver. Denials reject the invoke() call, which the
-  // settings page already surfaces in its status banners.
+  // settings page already surfaces in its status banners. The admin page stays
+  // usable without a licence so an admin can still configure the app and see
+  // the licence state; all issue actions and scheduled work are blocked.
   function guardAdminResolver(fn) {
     return async (request) => {
       await requireJiraAdmin();
@@ -109,7 +149,7 @@ export function createAccessGuards({ requestMyPermissions }) {
     };
   }
 
-  return { requireJiraAdmin, requireIssueAccess, requireProjectPermission, guardIssueResolver, guardAdminResolver };
+  return { requireJiraAdmin, requireIssueAccess, requireProjectPermission, requireActiveLicence, guardIssueResolver, guardAdminResolver };
 }
 
 // Settings each feature needs before it does anything. A fresh install has
