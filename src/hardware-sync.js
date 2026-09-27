@@ -10,6 +10,7 @@ import {
 import { getDeliveryManagerConfig } from "./config.js";
 import { missingSettings } from "./access-core.mjs";
 import { quoteJql as jqlQuote } from "./dhl-config-core.mjs";
+import { responseErrorSummary } from "./log-core.mjs";
 
 const CREATED_PROPERTY = "nuvriqo.delivery-manager.hardware-ticket";
 
@@ -18,7 +19,7 @@ async function search(jql, fields, config) {
     route`/rest/api/3/search/jql?jql=${jql}&maxResults=${config.maxResults}&fields=${fields.join(",")}`,
     { method: "GET", headers: { Accept: "application/json" } }
   );
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(`Jira search failed: ${await responseErrorSummary(response)}`);
   return (await response.json()).issues ?? [];
 }
 
@@ -27,7 +28,7 @@ async function jiraJson(path, options = {}) {
     headers: { Accept: "application/json", "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
-  if (!response.ok) return { ok: false, status: response.status, error: await response.text() };
+  if (!response.ok) return { ok: false, status: response.status, error: await responseErrorSummary(response) };
   if (response.status === 204) return { ok: true, data: null };
   return { ok: true, data: await response.json() };
 }
@@ -70,7 +71,7 @@ async function updateFields(issueKey, fields) {
     body: JSON.stringify({ fields }),
   });
   if (!response.ok) {
-    console.log(`HW-SYNC: field update failed for ${issueKey}: ${await response.text()}`);
+    console.log(`HW-SYNC: field update failed for ${issueKey}: ${await responseErrorSummary(response)}`);
     return false;
   }
   return true;
@@ -163,7 +164,7 @@ async function createMissingHardwareTickets(config) {
     });
 
     if (!response.ok) {
-      console.log(`HW-SYNC: failed creating HW issue for ${sdIssue.key}: ${await response.text()}`);
+      console.log(`HW-SYNC: failed creating HW issue for ${sdIssue.key}: ${await responseErrorSummary(response)}`);
       continue;
     }
 

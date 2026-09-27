@@ -10,6 +10,7 @@ import {
 } from "./core.mjs";
 import { buildEligibleIssueJql, deliveryDecision, safeDhlRuntimeConfig } from "./dhl-config-core.mjs";
 import { missingSettings } from "./access-core.mjs";
+import { responseErrorSummary } from "./log-core.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -34,7 +35,7 @@ async function getDHL(trackingNumber, config, apiKey) {
       headers: { "DHL-API-Key": apiKey, Accept: "application/json" },
     });
     if (response.status === 429) return { rateLimited: true, retryAfter: response.headers.get("Retry-After") };
-    if (!response.ok) return { error: true, status: response.status, body: await response.text() };
+    if (!response.ok) return { error: true, status: response.status, message: await responseErrorSummary(response) };
     return { ok: true, data: await response.json() };
   } catch (error) {
     return { error: true, message: String(error) };
@@ -49,7 +50,7 @@ async function updateIssueFields(issueKey, fields) {
     body: JSON.stringify({ fields }),
   });
   if (!response.ok) {
-    console.log(`DHL: failed updating ${issueKey}: ${await response.text()}`);
+    console.log(`DHL: failed updating ${issueKey}: ${await responseErrorSummary(response)}`);
     return false;
   }
   return true;
@@ -61,7 +62,7 @@ async function addInternalComment(issueKey, text) {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ public: false, body: text }),
   });
-  if (!response.ok) console.log(`DHL: comment failed for ${issueKey}: ${await response.text()}`);
+  if (!response.ok) console.log(`DHL: comment failed for ${issueKey}: ${await responseErrorSummary(response)}`);
   return response.ok;
 }
 
@@ -85,7 +86,7 @@ async function transitionToStatus(issueKey, targetStatusName, resolutionName = n
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) console.log(`DHL: transition failed for ${issueKey}: ${await response.text()}`);
+  if (!response.ok) console.log(`DHL: transition failed for ${issueKey}: ${await responseErrorSummary(response)}`);
   return response.ok;
 }
 
@@ -105,7 +106,7 @@ async function searchEligibleIssues(config) {
     route`/rest/api/3/search/jql?jql=${jql}&maxResults=${config.maxResults}&fields=${fields.join(",")}`,
     { method: "GET", headers: { Accept: "application/json" } }
   );
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(`Jira search failed: ${await responseErrorSummary(response)}`);
   return (await response.json()).issues ?? [];
 }
 
@@ -207,7 +208,7 @@ export async function runConfiguredDhl(configOverride = null) {
     await updateIssueFields(issue.key, { [config.lastDhlCheckField]: new Date().toISOString() });
     if (!dhl.ok) {
       summary.failedRequests += 1;
-      console.log(`DHL: request failed for ${issue.key}: ${dhl.status ?? ""} ${dhl.body ?? dhl.message ?? ""}`);
+      console.log(`DHL: request failed for ${issue.key}: ${dhl.message ?? "unknown error"}`);
       continue;
     }
     const shipment = dhl.data?.shipments?.[0];
