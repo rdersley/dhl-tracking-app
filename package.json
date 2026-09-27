@@ -1,8 +1,8 @@
 {
-  "name": "scheduled-trigger",
-  "version": "1.2.0",
-  "main": "index.js",
-  "license": "MIT",
+  "name": "delivery-manager",
+  "version": "3.0.0",
+  "description": "Jira Cloud (Forge) app: service-to-hardware handover, DHL Express shipment creation and DHL tracking updates.",
+  "license": "UNLICENSED",
   "private": true,
   "scripts": {
     "test": "node --test tests/*.test.mjs"

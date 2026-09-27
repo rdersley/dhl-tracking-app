@@ -9,6 +9,8 @@ import {
   compareIssuesForFairRotation,
 } from "./core.mjs";
 import { buildEligibleIssueJql, deliveryDecision, safeDhlRuntimeConfig } from "./dhl-config-core.mjs";
+import { missingSettings } from "./access-core.mjs";
+import { responseErrorSummary } from "./log-core.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -33,7 +35,7 @@ async function getDHL(trackingNumber, config, apiKey) {
       headers: { "DHL-API-Key": apiKey, Accept: "application/json" },
     });
     if (response.status === 429) return { rateLimited: true, retryAfter: response.headers.get("Retry-After") };
-    if (!response.ok) return { error: true, status: response.status, body: await response.text() };
+    if (!response.ok) return { error: true, status: response.status, message: await responseErrorSummary(response) };
     return { ok: true, data: await response.json() };
   } catch (error) {
     return { error: true, message: String(error) };
@@ -48,7 +50,7 @@ async function updateIssueFields(issueKey, fields) {
     body: JSON.stringify({ fields }),
   });
   if (!response.ok) {
-    console.log(`DHL: failed updating ${issueKey}: ${await response.text()}`);
+    console.log(`DHL: failed updating ${issueKey}: ${await responseErrorSummary(response)}`);
     return false;
   }
   return true;
@@ -60,7 +62,7 @@ async function addInternalComment(issueKey, text) {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ public: false, body: text }),
   });
-  if (!response.ok) console.log(`DHL: comment failed for ${issueKey}: ${await response.text()}`);
+  if (!response.ok) console.log(`DHL: comment failed for ${issueKey}: ${await responseErrorSummary(response)}`);
   return response.ok;
 }
 
@@ -84,7 +86,7 @@ async function transitionToStatus(issueKey, targetStatusName, resolutionName = n
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) console.log(`DHL: transition failed for ${issueKey}: ${await response.text()}`);
+  if (!response.ok) console.log(`DHL: transition failed for ${issueKey}: ${await responseErrorSummary(response)}`);
   return response.ok;
 }
 
@@ -104,7 +106,7 @@ async function searchEligibleIssues(config) {
     route`/rest/api/3/search/jql?jql=${jql}&maxResults=${config.maxResults}&fields=${fields.join(",")}`,
     { method: "GET", headers: { Accept: "application/json" } }
   );
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(`Jira search failed: ${await responseErrorSummary(response)}`);
   return (await response.json()).issues ?? [];
 }
 
@@ -149,6 +151,13 @@ async function handleNonDelivered(issue, analysis, config) {
 
 export async function runConfiguredDhl(configOverride = null) {
   const config = safeDhlRuntimeConfig(configOverride || await getDeliveryManagerConfig());
+  // A fresh install has no project, statuses or tracking fields configured.
+  // Stay inert (no Jira or DHL calls) until an admin has set them.
+  const missing = missingSettings(config, "dhlTracking");
+  if (missing.length) {
+    console.log(`DHL: tracking is not configured (missing: ${missing.join(", ")}); skipping`);
+    return { ok: true, skipped: true, reason: "not-configured", missing, eligible: 0, processed: 0 };
+  }
   const apiKey = await getDhlApiKey();
   if (!apiKey) {
     console.log("DHL: API key is not configured in Delivery Manager settings");
@@ -199,7 +208,7 @@ export async function runConfiguredDhl(configOverride = null) {
     await updateIssueFields(issue.key, { [config.lastDhlCheckField]: new Date().toISOString() });
     if (!dhl.ok) {
       summary.failedRequests += 1;
-      console.log(`DHL: request failed for ${issue.key}: ${dhl.status ?? ""} ${dhl.body ?? dhl.message ?? ""}`);
+      console.log(`DHL: request failed for ${issue.key}: ${dhl.message ?? "unknown error"}`);
       continue;
     }
     const shipment = dhl.data?.shipments?.[0];

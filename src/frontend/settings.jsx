@@ -17,23 +17,27 @@ const toggleRowStyle = xcss({ padding: "space.200", borderRadius: "border.radius
 const mappingRowStyle = xcss({ padding: "space.150", borderRadius: "border.radius.200", borderWidth: "border.width", borderStyle: "solid", borderColor: "color.border" });
 
 const FALLBACK_CONFIG = {
-  sdProject: "SD",
-  hwProject: "HW",
-  sdSentStatus: "Sent to Hardware",
-  hwDispatchedStatus: "Dispatched",
-  sdDispatchedStatus: "Dispatched",
-  resolvedStatus: "Resolved",
+  // Site-specific settings (projects, workflow statuses and custom fields) are
+  // deliberately empty. A new install does nothing until a Jira admin picks
+  // them on the Delivery Manager settings page. Saved settings always win over
+  // these defaults, so existing installs keep their configured values.
+  sdProject: "",
+  hwProject: "",
+  sdSentStatus: "",
+  hwDispatchedStatus: "",
+  sdDispatchedStatus: "",
+  resolvedStatus: "",
   resolutionName: "Done",
-  outForDeliveryStatus: "OUT FOR DELIVERY",
-  awaitingCollectionStatus: "DELIVERY AWAITING COLLECTION",
-  onHoldStatus: "DELIVERY ON HOLD",
-  failedStatus: "DELIVERY FAILED",
-  trackingField: "customfield_10417",
-  dateSentField: "customfield_10433",
-  deliveryStatusField: "customfield_11952",
-  deliveryDateField: "customfield_10434",
-  signedForField: "customfield_10442",
-  lastDhlCheckField: "customfield_14400",
+  outForDeliveryStatus: "",
+  awaitingCollectionStatus: "",
+  onHoldStatus: "",
+  failedStatus: "",
+  trackingField: "",
+  dateSentField: "",
+  deliveryStatusField: "",
+  deliveryDateField: "",
+  signedForField: "",
+  lastDhlCheckField: "",
   clientField: "",
   clientRestrictionEnabled: false,
   clientValues: [],

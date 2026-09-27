@@ -12,6 +12,8 @@ import {
   validateShipmentDraft,
 } from "./shipment-core.mjs";
 import { classifyDhlShipmentHttpFailure } from "./dhl-shipping-http-core.mjs";
+import { guardIssueResolver } from "./access.js";
+import { missingSettings } from "./access-core.mjs";
 
 const resolver = new Resolver();
 const SHIPMENT_PROPERTY = "nuvriqo.delivery-manager.dhl-shipment";
@@ -157,24 +159,39 @@ async function repairRecordedShipment(issueKey, state, config) {
   };
 }
 
-resolver.define("checkDhlShipment", async ({ payload }) => {
-  const issueKey = String(payload?.issueKey || "").trim();
-  if (!issueKey) return { ok: false, error: "No Jira issue was supplied." };
-  const config = await getDeliveryManagerConfig();
-  return inspect(issueKey, config);
-});
+// Every resolver below acts with api.asApp(), so guardIssueResolver() first
+// confirms that the *calling user* can browse (and, to create, edit) the
+// hardware issue named in the payload.
+function notConfigured(config) {
+  const missing = missingSettings(config, "shipmentAction");
+  return missing.length
+    ? { ok: false, notConfigured: true, missing, error: "DHL shipment creation is not configured yet. A Jira admin must set the hardware project and tracking field in Delivery Manager settings." }
+    : null;
+}
 
-resolver.define("validateDhlShipment", async ({ payload }) => {
+resolver.define("checkDhlShipment", guardIssueResolver(async ({ payload }) => {
+  const issueKey = String(payload?.issueKey || "").trim().toUpperCase();
+  const config = await getDeliveryManagerConfig();
+  const unconfigured = notConfigured(config);
+  if (unconfigured) return unconfigured;
+  return inspect(issueKey, config);
+}, { permissions: ["BROWSE_PROJECTS"] }));
+
+// Draft validation reads only saved settings (no issue data, no DHL call). It
+// is not invoked by the current UI, but is guarded like the others so no
+// resolver in this module is callable without issue access.
+resolver.define("validateDhlShipment", guardIssueResolver(async ({ payload }) => {
   const config = await getDeliveryManagerConfig();
   return validateShipmentDraft(payload?.draft || {}, config);
-});
+}, { permissions: ["BROWSE_PROJECTS"] }));
 
-resolver.define("createDhlShipment", async ({ payload }) => {
-  const issueKey = String(payload?.issueKey || "").trim();
+resolver.define("createDhlShipment", guardIssueResolver(async ({ payload }) => {
+  const issueKey = String(payload?.issueKey || "").trim().toUpperCase();
   const draft = payload?.draft || {};
-  if (!issueKey) return { ok: false, error: "No Jira issue was supplied." };
 
   const config = await getDeliveryManagerConfig();
+  const unconfigured = notConfigured(config);
+  if (unconfigured) return unconfigured;
   if (!config.dhlShippingEnabled) return { ok: false, disabled: true, error: "DHL shipment creation is disabled in Delivery Manager settings." };
   if (config.dhlShippingEnvironment === "production" && payload?.confirmProduction !== true) {
     return { ok: false, productionConfirmationRequired: true, error: "Production shipment creation requires explicit confirmation." };
@@ -273,6 +290,6 @@ resolver.define("createDhlShipment", async ({ payload }) => {
     warning: !updateResult.ok || !labelResult.ok || !transitionResult.ok,
     error: !updateResult.ok ? `Shipment created but Jira field update failed: ${updateResult.error}` : !transitionResult.ok ? `Shipment created but Jira transition failed: ${transitionResult.error}` : null,
   };
-});
+}, { permissions: ["BROWSE_PROJECTS", "EDIT_ISSUES"] }));
 
 export const handler = resolver.getDefinitions();

@@ -8,6 +8,9 @@ import {
   normaliseRecordedHardwareKeys,
 } from "./hardware-core.mjs";
 import { getDeliveryManagerConfig } from "./config.js";
+import { missingSettings } from "./access-core.mjs";
+import { quoteJql as jqlQuote } from "./dhl-config-core.mjs";
+import { responseErrorSummary } from "./log-core.mjs";
 
 const CREATED_PROPERTY = "nuvriqo.delivery-manager.hardware-ticket";
 
@@ -16,7 +19,7 @@ async function search(jql, fields, config) {
     route`/rest/api/3/search/jql?jql=${jql}&maxResults=${config.maxResults}&fields=${fields.join(",")}`,
     { method: "GET", headers: { Accept: "application/json" } }
   );
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(`Jira search failed: ${await responseErrorSummary(response)}`);
   return (await response.json()).issues ?? [];
 }
 
@@ -25,7 +28,7 @@ async function jiraJson(path, options = {}) {
     headers: { Accept: "application/json", "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
-  if (!response.ok) return { ok: false, status: response.status, error: await response.text() };
+  if (!response.ok) return { ok: false, status: response.status, error: await responseErrorSummary(response) };
   if (response.status === 204) return { ok: true, data: null };
   return { ok: true, data: await response.json() };
 }
@@ -68,7 +71,7 @@ async function updateFields(issueKey, fields) {
     body: JSON.stringify({ fields }),
   });
   if (!response.ok) {
-    console.log(`HW-SYNC: field update failed for ${issueKey}: ${await response.text()}`);
+    console.log(`HW-SYNC: field update failed for ${issueKey}: ${await responseErrorSummary(response)}`);
     return false;
   }
   return true;
@@ -102,7 +105,7 @@ async function addInternalComment(issueKey, text) {
 
 async function reconcileDispatchedHardware(config) {
   const fields = ["issuelinks", config.trackingField, config.dateSentField, "status"];
-  const jql = `project = ${config.hwProject} AND status = \"${config.hwDispatchedStatus}\" ORDER BY updated ASC`;
+  const jql = `project = ${jqlQuote(config.hwProject)} AND status = ${jqlQuote(config.hwDispatchedStatus)} ORDER BY updated ASC`;
   const hwIssues = await search(jql, fields, config);
   let repaired = 0;
   let missingLinks = 0;
@@ -124,9 +127,14 @@ async function reconcileDispatchedHardware(config) {
 
 async function createMissingHardwareTickets(config) {
   if (!config.createEnabled) return { checked: 0, created: 0, skippedDuplicates: 0, autoCreateEnabled: false, safeguardStopped: false };
+  const missing = missingSettings(config, "hardwareAutoCreate");
+  if (missing.length) {
+    console.log(`HW-SYNC: auto-create is enabled but not configured (missing: ${missing.join(", ")}); skipping creation`);
+    return { checked: 0, created: 0, skippedDuplicates: 0, autoCreateEnabled: true, notConfigured: true, missing, safeguardStopped: false };
+  }
 
   const sourceFields = ["summary", "description", "issuetype", "issuelinks", ...config.hwFieldMappings.map((m) => m.source)].filter(Boolean);
-  const jql = `project = ${config.sdProject} AND status = \"${config.sdSentStatus}\" ORDER BY updated ASC`;
+  const jql = `project = ${jqlQuote(config.sdProject)} AND status = ${jqlQuote(config.sdSentStatus)} ORDER BY updated ASC`;
   const sdIssues = await search(jql, sourceFields, config);
   let created = 0;
   let skippedDuplicates = 0;
@@ -156,7 +164,7 @@ async function createMissingHardwareTickets(config) {
     });
 
     if (!response.ok) {
-      console.log(`HW-SYNC: failed creating HW issue for ${sdIssue.key}: ${await response.text()}`);
+      console.log(`HW-SYNC: failed creating HW issue for ${sdIssue.key}: ${await responseErrorSummary(response)}`);
       continue;
     }
 
@@ -202,6 +210,13 @@ export async function runHardwareSync(configOverride = null) {
   console.log("HW-SYNC: starting hardware handover reconciliation");
   try {
     const config = configOverride || await getDeliveryManagerConfig();
+    // A fresh install has no projects, statuses or fields configured. Do
+    // nothing (and make no Jira calls) until an admin has set them.
+    const missing = missingSettings(config, "hardwareSync");
+    if (missing.length) {
+      console.log(`HW-SYNC: not configured (missing: ${missing.join(", ")}); skipping`);
+      return { ok: true, skipped: true, reason: "not-configured", missing };
+    }
     const dispatch = await reconcileDispatchedHardware(config);
     const creation = await createMissingHardwareTickets(config);
     const result = { ok: !creation.safeguardStopped, dispatch, creation };

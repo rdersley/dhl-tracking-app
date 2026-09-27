@@ -14,8 +14,17 @@ import {
 } from "./config.js";
 import { buildEligibleIssueJql } from "./dhl-config-core.mjs";
 import { getDeliveryManagerHealth } from "./health.js";
+import { guardAdminResolver } from "./access.js";
 
 const resolver = new Resolver();
+
+// Every resolver in this module backs the Jira admin settings page. They read
+// and write app configuration and secrets and query Jira with api.asApp(), so
+// each one is registered through defineAdmin(), which first confirms (as the
+// calling user) that they hold the global ADMINISTER permission.
+function defineAdmin(name, fn) {
+  resolver.define(name, guardAdminResolver(fn));
+}
 
 async function jiraJson(path) {
   const response = await api.asApp().requestJira(path, { method: "GET", headers: { Accept: "application/json" } });
@@ -90,15 +99,15 @@ async function searchPreview(jql, maxResults = 25) {
   }
 }
 
-resolver.define("getConfig", async () => ({
+defineAdmin("getConfig", async () => ({
   ...(await getDeliveryManagerConfig()),
   dhlApiKeyConfigured: await hasDhlApiKey(),
   dhlShippingCredentialsConfigured: await hasDhlShippingCredentials(),
 }));
-resolver.define("saveConfig", async ({ payload }) => ({ ok: true, config: await saveDeliveryManagerConfig(payload?.config || {}) }));
-resolver.define("getRuntimeHealth", async () => getDeliveryManagerHealth());
+defineAdmin("saveConfig", async ({ payload }) => ({ ok: true, config: await saveDeliveryManagerConfig(payload?.config || {}) }));
+defineAdmin("getRuntimeHealth", async () => getDeliveryManagerHealth());
 
-resolver.define("saveDhlCredentials", async ({ payload }) => {
+defineAdmin("saveDhlCredentials", async ({ payload }) => {
   const apiKey = String(payload?.apiKey || "").trim();
   const clear = payload?.clear === true;
   if (clear) {
@@ -110,7 +119,7 @@ resolver.define("saveDhlCredentials", async ({ payload }) => {
   return { ok: true, configured: true, message: "DHL API key saved securely." };
 });
 
-resolver.define("saveDhlShippingCredentials", async ({ payload }) => {
+defineAdmin("saveDhlShippingCredentials", async ({ payload }) => {
   const clear = payload?.clear === true;
   if (clear) {
     await clearDhlShippingCredentials();
@@ -123,7 +132,7 @@ resolver.define("saveDhlShippingCredentials", async ({ payload }) => {
   return { ok: true, configured: true, message: "DHL Express shipping credentials saved securely." };
 });
 
-resolver.define("testDhlConnection", async ({ payload }) => {
+defineAdmin("testDhlConnection", async ({ payload }) => {
   const config = { ...(await getDeliveryManagerConfig()), ...(payload?.config || {}) };
   const apiKey = await getDhlApiKey();
   if (!apiKey) return { ok: false, message: "No DHL API key is configured." };
@@ -147,7 +156,7 @@ resolver.define("testDhlConnection", async ({ payload }) => {
   }
 });
 
-resolver.define("testDhlShippingConnection", async ({ payload }) => {
+defineAdmin("testDhlShippingConnection", async ({ payload }) => {
   const config = { ...(await getDeliveryManagerConfig()), ...(payload?.config || {}) };
   const credentials = await getDhlShippingCredentials();
   if (!credentials.username || !credentials.password) return { ok: false, message: "No DHL Express shipping credentials are configured." };
@@ -170,7 +179,7 @@ resolver.define("testDhlShippingConnection", async ({ payload }) => {
   }
 });
 
-resolver.define("getOptions", async () => {
+defineAdmin("getOptions", async () => {
   const [projectsResult, fieldsResult, issueTypesResult, linkTypesResult, resolutionsResult] = await Promise.all([
     jiraJson(route`/rest/api/3/project/search?maxResults=100`),
     jiraJson(route`/rest/api/3/field`),
@@ -187,21 +196,30 @@ resolver.define("getOptions", async () => {
   };
 });
 
-resolver.define("getProjectStatuses", async ({ payload }) => {
+defineAdmin("getProjectStatuses", async ({ payload }) => {
   const projectKey = String(payload?.projectKey || "").trim();
   if (!projectKey) return { ok: false, projectKey: "", statuses: [], error: "No project selected" };
   return { projectKey, ...(await loadProjectStatuses(projectKey)) };
 });
 
-resolver.define("getOperationalPreview", async ({ payload }) => {
+defineAdmin("getOperationalPreview", async ({ payload }) => {
   const config = { ...(await getDeliveryManagerConfig()), ...(payload?.config || {}) };
   const handoverJql = `project = ${jqlQuote(config.sdProject)} AND status = ${jqlQuote(config.sdSentStatus)}`;
   const dispatchedHwJql = `project = ${jqlQuote(config.hwProject)} AND status = ${jqlQuote(config.hwDispatchedStatus)}`;
-  const dhlJql = buildEligibleIssueJql(config);
+  // buildEligibleIssueJql() throws when the tracking fields are not set yet
+  // (the default on a fresh install); report that instead of failing the call.
+  let dhlJql = "";
+  let dhlJqlError = null;
+  try {
+    dhlJql = buildEligibleIssueJql(config);
+  } catch (error) {
+    dhlJqlError = String(error?.message || error);
+  }
+  const notConfiguredPreview = (reason) => Promise.resolve({ ok: false, count: 0, issues: [], error: reason });
   const [handover, dispatchedHardware, dhlEligible] = await Promise.all([
-    searchPreview(handoverJql),
-    searchPreview(dispatchedHwJql),
-    searchPreview(dhlJql),
+    config.sdProject && config.sdSentStatus ? searchPreview(handoverJql) : notConfiguredPreview("Service project and Sent to Hardware status are not configured"),
+    config.hwProject && config.hwDispatchedStatus ? searchPreview(dispatchedHwJql) : notConfiguredPreview("Hardware project and Dispatched status are not configured"),
+    dhlJqlError ? notConfiguredPreview(dhlJqlError) : searchPreview(dhlJql),
   ]);
   return {
     ok: handover.ok && dispatchedHardware.ok && dhlEligible.ok,
@@ -220,7 +238,7 @@ resolver.define("getOperationalPreview", async ({ payload }) => {
   };
 });
 
-resolver.define("validateConfig", async ({ payload }) => {
+defineAdmin("validateConfig", async ({ payload }) => {
   const config = payload?.config || (await getDeliveryManagerConfig());
   const checks = [];
 
