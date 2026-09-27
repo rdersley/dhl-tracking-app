@@ -9,6 +9,7 @@ import {
   compareIssuesForFairRotation,
 } from "./core.mjs";
 import { buildEligibleIssueJql, deliveryDecision, safeDhlRuntimeConfig } from "./dhl-config-core.mjs";
+import { missingSettings } from "./access-core.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -149,6 +150,13 @@ async function handleNonDelivered(issue, analysis, config) {
 
 export async function runConfiguredDhl(configOverride = null) {
   const config = safeDhlRuntimeConfig(configOverride || await getDeliveryManagerConfig());
+  // A fresh install has no project, statuses or tracking fields configured.
+  // Stay inert (no Jira or DHL calls) until an admin has set them.
+  const missing = missingSettings(config, "dhlTracking");
+  if (missing.length) {
+    console.log(`DHL: tracking is not configured (missing: ${missing.join(", ")}); skipping`);
+    return { ok: true, skipped: true, reason: "not-configured", missing, eligible: 0, processed: 0 };
+  }
   const apiKey = await getDhlApiKey();
   if (!apiKey) {
     console.log("DHL: API key is not configured in Delivery Manager settings");

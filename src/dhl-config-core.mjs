@@ -1,4 +1,6 @@
-function quoteJql(value) {
+// Quote a value for use inside JQL so project keys and status names from the
+// settings page cannot change the structure of the query.
+export function quoteJql(value) {
   return `"${String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
