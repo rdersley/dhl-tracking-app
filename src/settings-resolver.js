@@ -149,6 +149,9 @@ resolver.define("testDhlConnection", async ({ payload }) => {
 
 resolver.define("testDhlShippingConnection", async ({ payload }) => {
   const config = { ...(await getDeliveryManagerConfig()), ...(payload?.config || {}) };
+  if (config.dhlShippingEnvironment === "simulate") {
+    return { ok: true, simulated: true, message: "Simulate mode: DHL is not contacted, so there is no connection to test." };
+  }
   const credentials = await getDhlShippingCredentials();
   if (!credentials.username || !credentials.password) return { ok: false, message: "No DHL Express shipping credentials are configured." };
   const baseUrl = String(config.dhlShippingApiUrl || "").replace(/\/$/, "");
@@ -302,7 +305,9 @@ resolver.define("validateConfig", async ({ payload }) => {
   const apiKeyOk = await hasDhlApiKey();
   checks.push({ key: "DHL API key", ok: apiKeyOk, message: apiKeyOk ? "Configured securely" : "Not configured" });
 
-  if (config.dhlShippingEnabled) {
+  if (config.dhlShippingEnabled && config.dhlShippingEnvironment === "simulate") {
+    checks.push({ key: "DHL shipment creation", ok: true, message: "SIMULATE mode — DHL is never contacted; shipments get SIM- tracking numbers" });
+  } else if (config.dhlShippingEnabled) {
     const shippingCredentialsOk = await hasDhlShippingCredentials();
     const shippingUrlOk = (() => { try { const u = new URL(config.dhlShippingApiUrl); return u.protocol === "https:" && u.hostname.toLowerCase() === "express.api.dhl.com" && u.pathname.startsWith("/mydhlapi"); } catch { return false; } })();
     checks.push({ key: "DHL shipment creation", ok: true, message: `${config.dhlShippingEnvironment === "production" ? "PRODUCTION" : "TEST"} mode enabled` });

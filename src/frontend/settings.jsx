@@ -3,6 +3,12 @@ import ForgeReconciler, { Box, Button, Heading, Inline, Label, MessageBanner, Se
 import { invoke } from "@forge/bridge";
 import { DHL_LABEL_SIZES } from "../shipment-core.mjs";
 
+const SHIPPING_ENVIRONMENT_OPTIONS = [
+  { label: "Simulate (no DHL calls)", value: "simulate" },
+  { label: "Test", value: "test" },
+  { label: "Production", value: "production" },
+];
+
 const LABEL_SIZE_OPTIONS = Object.entries(DHL_LABEL_SIZES).map(([value, item]) => ({ label: item.label, value }));
 
 const UI_BUILD = "DM-COMBINED-RC-20260905-UI7";
@@ -514,10 +520,10 @@ function App() {
         </Box>
         <Inline space="space.200" shouldWrap>
           <Box xcss={fieldColumnStyle}>
-            <FieldBlock label="Environment" help="Use Test until shipment creation, labels and Jira write-back have been proven.">
+            <FieldBlock label="Environment" help="Simulate to try the flow without DHL; Test once MyDHL test credentials arrive; Production only after both are proven.">
               <Select
-                options={[{ label: "Test", value: "test" }, { label: "Production", value: "production" }]}
-                value={optionFor([{ label: "Test", value: "test" }, { label: "Production", value: "production" }], config.dhlShippingEnvironment)}
+                options={SHIPPING_ENVIRONMENT_OPTIONS}
+                value={optionFor(SHIPPING_ENVIRONMENT_OPTIONS, config.dhlShippingEnvironment)}
                 onChange={(option) => {
                   const value = option?.value || "test";
                   patch("dhlShippingEnvironment", value);
@@ -553,7 +559,7 @@ function App() {
           {config.dhlShippingCredentialsConfigured ? <Button appearance="subtle" onClick={clearShippingCredentials} isDisabled={busy}>Clear shipping credentials</Button> : null}
         </Inline>
         {shippingTest ? <Box xcss={shippingTest.ok ? statusOkStyle : statusWarnStyle}><Text>{shippingTest.message}</Text></Box> : null}
-        {config.dhlShippingEnvironment === "production" ? <Box xcss={statusWarnStyle}><Text>Production mode selected. Shipment creation is forced OFF when switching to Production; re-enable it only after validation and a deliberate go-live decision.</Text></Box> : <Box xcss={infoStyle}><Text>Test mode selected. DHL shipment creation remains isolated from production until you deliberately switch environment and re-enable it.</Text></Box>}
+        {config.dhlShippingEnvironment === "simulate" ? <Box xcss={statusWarnStyle}><Text>Simulate mode selected. DHL is never contacted and no credentials are needed. Shipments get SIM- tracking numbers and SIMULATED PDF documents, but Jira fields, transitions and comments are updated for real, so use test tickets only. The tracking scheduler skips SIM- numbers.</Text></Box> : config.dhlShippingEnvironment === "production" ? <Box xcss={statusWarnStyle}><Text>Production mode selected. Shipment creation is forced OFF when switching to Production; re-enable it only after validation and a deliberate go-live decision.</Text></Box> : <Box xcss={infoStyle}><Text>Test mode selected. DHL shipment creation remains isolated from production until you deliberately switch environment and re-enable it.</Text></Box>}
       </Stack>
     </Box>
 

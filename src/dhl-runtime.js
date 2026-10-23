@@ -9,6 +9,7 @@ import {
   compareIssuesForFairRotation,
 } from "./core.mjs";
 import { buildEligibleIssueJql, deliveryDecision, safeDhlRuntimeConfig } from "./dhl-config-core.mjs";
+import { isSimulatedTrackingNumber } from "./dhl-simulator.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -187,6 +188,8 @@ export async function runConfiguredDhl(configOverride = null) {
   for (const issue of toProcess) {
     const trackingNumber = issue.fields[config.trackingField];
     if (!trackingNumber) continue;
+    // Simulated shipments (SIM-...) do not exist at DHL, so never poll them.
+    if (isSimulatedTrackingNumber(trackingNumber)) continue;
     await sleep(config.dhlDelayMs);
     const dhl = await getDHL(trackingNumber, config, apiKey);
     if (dhl.rateLimited) {
