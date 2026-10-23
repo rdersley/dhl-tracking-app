@@ -32,9 +32,25 @@ export function currentDropdownValue(fieldValue) {
   return fieldValue.value ?? null;
 }
 
+// DHL returns events newest first, but prefer real timestamps when every
+// event has one so an out-of-order response cannot pick a stale event.
+export function latestDhlEvent(shipment) {
+  const events = (shipment?.events ?? []).filter(Boolean);
+  if (!events.length) return null;
+
+  const times = events.map((event) => new Date(event?.timestamp).getTime());
+  if (times.some((time) => Number.isNaN(time))) return events[0];
+
+  return events.reduce((latest, event, index) =>
+    times[index] > new Date(latest.timestamp).getTime() ? event : latest
+  );
+}
+
+// Only the current shipment status and the newest event describe where the
+// parcel is now. Older history (e.g. a customs clearance days ago) must not
+// keep influencing the Jira status.
 export function collectStatusStrings(shipment) {
   const values = [];
-  const events = shipment?.events ?? [];
 
   const collect = (item) => {
     if (!item) return;
@@ -50,11 +66,24 @@ export function collectStatusStrings(shipment) {
   };
 
   collect(shipment?.status);
-  events.forEach(collect);
+  collect(latestDhlEvent(shipment));
 
   return values
     .filter((value) => typeof value === "string")
     .map(normalise);
+}
+
+// Phrases such as "could not be delivered" or "will be delivered" contain the
+// word "delivered" but mean the opposite, so they are removed before matching.
+const NEGATED_DELIVERED = [
+  /\bnot\s+(?:yet\s+)?(?:been\s+)?delivered\b/g,
+  /\bnever\s+(?:been\s+)?delivered\b/g,
+  /\bbe\s+delivered\b/g,
+];
+
+export function isDeliveredText(status) {
+  const text = NEGATED_DELIVERED.reduce((value, pattern) => value.replace(pattern, " "), normalise(status));
+  return /\bdelivered\b/.test(text);
 }
 
 export function analyseDHLStatuses(statuses) {
@@ -64,7 +93,7 @@ export function analyseDHLStatuses(statuses) {
     );
 
   return {
-    delivered: includesAny(["delivered"]),
+    delivered: statuses.some(isDeliveredText),
     returnedToSender: includesAny([
       "return to sender",
       "returned to sender",
@@ -73,6 +102,9 @@ export function analyseDHLStatuses(statuses) {
     ]),
     deliveryFailed: includesAny([
       "delivery failed",
+      "could not be delivered",
+      "cannot be delivered",
+      "not delivered",
       "delivery attempt could not be completed",
       "delivery attempted but no response",
       "recipient not home",
