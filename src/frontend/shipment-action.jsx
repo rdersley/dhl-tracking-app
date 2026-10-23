@@ -200,7 +200,7 @@ function App() {
         <SectionMessage appearance={result.ok ? "success" : result.created ? "warning" : "error"} title={result.ok ? "DHL shipment created" : result.created ? "Shipment created — Jira needs attention" : "Shipment not created"}>
           {result.trackingNumber && <Text>Tracking number: {result.trackingNumber}</Text>}
           {result.dispatchConfirmationNumber && <Text>Dispatch confirmation: {result.dispatchConfirmationNumber}</Text>}
-          {result.labelAttached && <Text>DHL shipping label was attached to the hardware ticket.</Text>}
+          {Array.isArray(result.documentsAttached) && result.documentsAttached.length > 0 && <Text>Attached to this ticket for printing: {result.documentsAttached.join(", ")}</Text>}
           {result.labelError && <Text>Label attachment warning: {result.labelError}</Text>}
           {result.error && <Text>{result.error}</Text>}
           {Array.isArray(result.errors) && result.errors.map((error) => <Text key={error}>{error}</Text>)}

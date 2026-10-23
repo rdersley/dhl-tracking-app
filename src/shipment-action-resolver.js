@@ -12,6 +12,7 @@ import {
   buildPendingShipmentRecord,
   buildShipmentRepairPlan,
   buildShipmentWriteback,
+  documentFilename,
   extractMyDhlShipmentResult,
   isDefinitiveShipmentFailure,
   shipmentRecordState,
@@ -91,27 +92,51 @@ async function addPrivateComment(issueKey, body) {
   });
 }
 
-async function attachLabel(issueKey, result) {
-  if (result.labelTooLarge) return { ok: false, skipped: true, error: "DHL label exceeded the Delivery Manager attachment safety limit." };
-  if (!result.labelBase64) return { ok: true, skipped: true };
+// Uploads every DHL document (label, waybill, receipt) to the hardware ticket
+// in a single multipart request. Documents over the size budget are skipped and
+// reported so the agent knows to download them from MyDHL instead.
+async function attachDocuments(issueKey, result) {
+  const documents = result.documents || [];
+  const tooLarge = documents.filter((document) => document.tooLarge).map((document) => document.kind);
+  const usable = documents.filter((document) => !document.tooLarge && document.base64);
+  if (!usable.length) {
+    return { ok: !tooLarge.length, skipped: true, attached: [], tooLarge, error: tooLarge.length ? "DHL documents exceeded the Delivery Manager attachment safety limit." : null };
+  }
+
   try {
-    const bytes = Buffer.from(result.labelBase64, "base64");
-    if (!bytes.length) return { ok: false, error: "DHL returned an empty label." };
-    const format = String(result.labelFormat || "PDF").toUpperCase();
-    const extension = format.includes("PNG") ? "png" : format.includes("ZPL") ? "zpl" : "pdf";
-    const mime = extension === "png" ? "image/png" : extension === "zpl" ? "text/plain" : "application/pdf";
     const form = new FormData();
-    form.append("file", new Blob([bytes], { type: mime }), `DHL-${result.trackingNumber}-label.${extension}`);
+    const seen = {};
+    const names = [];
+    for (const document of usable) {
+      const bytes = Buffer.from(document.base64, "base64");
+      if (!bytes.length) continue;
+      const filename = documentFilename(result.trackingNumber, document, seen[document.kind] || 0);
+      seen[document.kind] = (seen[document.kind] || 0) + 1;
+      const mime = filename.endsWith(".png") ? "image/png" : filename.endsWith(".zpl") ? "text/plain" : "application/pdf";
+      form.append("file", new Blob([bytes], { type: mime }), filename);
+      names.push({ kind: document.kind, filename });
+    }
+    if (!names.length) return { ok: false, attached: [], tooLarge, error: "DHL returned empty documents." };
+
     const response = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/attachments`, {
       method: "POST",
       headers: { Accept: "application/json", "X-Atlassian-Token": "no-check" },
       body: form,
     });
-    if (!response.ok) return { ok: false, status: response.status, error: await response.text() };
+    if (!response.ok) return { ok: false, status: response.status, attached: [], tooLarge, error: await response.text() };
     const data = await response.json();
-    return { ok: true, attachmentId: data?.[0]?.id || null, filename: data?.[0]?.filename || null };
+    const attached = names.map((item) => ({
+      ...item,
+      id: (data || []).find((attachment) => attachment?.filename === item.filename)?.id || null,
+    }));
+    return {
+      ok: !tooLarge.length,
+      attached,
+      tooLarge,
+      error: tooLarge.length ? `Not attached because of the size limit: ${tooLarge.join(", ")}. Download them from MyDHL.` : null,
+    };
   } catch (error) {
-    return { ok: false, error: String(error) };
+    return { ok: false, attached: [], tooLarge, error: String(error) };
   }
 }
 
@@ -335,14 +360,16 @@ resolver.define("createDhlShipment", async ({ payload }) => {
     method: "PUT",
     body: JSON.stringify({ fields: buildShipmentWriteback(result, config) }),
   });
-  const labelResult = await attachLabel(issueKey, result);
+  const documentsResult = await attachDocuments(issueKey, result);
+  const attachedLabel = documentsResult.attached.find((item) => item.kind === "label") || null;
   const transitionResult = config.transitionsEnabled ? await transitionIssue(issueKey, config.hwDispatchedStatus) : { ok: true, skipped: true };
 
   if (config.commentsEnabled) {
     const parts = [`DHL shipment created. Tracking number: ${result.trackingNumber}.`];
     if (result.dispatchConfirmationNumber) parts.push(`Dispatch confirmation: ${result.dispatchConfirmationNumber}.`);
-    if (labelResult.ok && !labelResult.skipped) parts.push("Shipping label attached to this issue.");
-    if (result.labelTooLarge) parts.push("DHL returned a label that exceeded the Delivery Manager attachment safety limit, so it was not attached.");
+    if (documentsResult.attached.length) parts.push(`Attached to this issue for printing: ${documentsResult.attached.map((item) => item.filename).join(", ")}.`);
+    if (documentsResult.tooLarge.length) parts.push(`Not attached because they exceeded the size limit (download from MyDHL): ${documentsResult.tooLarge.join(", ")}.`);
+    if (!documentsResult.ok && !documentsResult.tooLarge.length && documentsResult.error) parts.push("The DHL documents could not be attached; download them from MyDHL.");
     await addPrivateComment(issueKey, parts.join(" "));
   }
 
@@ -352,12 +379,13 @@ resolver.define("createDhlShipment", async ({ payload }) => {
     trackingNumber: result.trackingNumber,
     dispatchConfirmationNumber: result.dispatchConfirmationNumber,
     jiraUpdated: updateResult.ok,
-    labelAttached: labelResult.ok && !labelResult.skipped,
-    labelAttachmentId: labelResult.attachmentId || null,
-    labelError: labelResult.ok ? null : labelResult.error,
+    labelAttached: Boolean(attachedLabel),
+    labelAttachmentId: attachedLabel?.id || null,
+    documentsAttached: documentsResult.attached.map((item) => item.filename),
+    labelError: documentsResult.ok ? null : documentsResult.error,
     transitioned: transitionResult.ok && !transitionResult.skipped,
     transitionError: transitionResult.ok ? null : transitionResult.error,
-    warning: !updateResult.ok || !labelResult.ok || !transitionResult.ok,
+    warning: !updateResult.ok || !documentsResult.ok || !transitionResult.ok,
     error: !updateResult.ok ? `Shipment created but Jira field update failed: ${updateResult.error}` : !transitionResult.ok ? `Shipment created but Jira transition failed: ${transitionResult.error}` : null,
   };
 });

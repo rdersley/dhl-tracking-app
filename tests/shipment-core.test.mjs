@@ -6,7 +6,11 @@ import {
   buildCreatedShipmentRecord,
   buildPendingShipmentRecord,
   buildShipmentRepairPlan,
+  buildOutputImageProperties,
   buildShipmentWriteback,
+  cleanLabelSize,
+  documentFilename,
+  extractMyDhlDocuments,
   extractMyDhlShipmentResult,
   formatMyDhlDateTime,
   isDefinitiveShipmentFailure,
@@ -184,4 +188,57 @@ test("repair refuses to overwrite a different tracking number on the ticket", ()
   const plan = buildShipmentRepairPlan({ customfield_10417: "OTHER" }, { trackingNumber: "JD0001" }, config);
   assert.equal(plan.action, "conflict");
   assert.equal(buildShipmentRepairPlan({}, {}, config).action, "invalid");
+});
+
+test("requests label and waybill as separate PDFs by default, never the customs invoice", () => {
+  const output = buildOutputImageProperties({});
+  assert.equal(output.encodingFormat, "pdf");
+  assert.equal(output.allDocumentsInOneImage, false);
+  assert.equal(output.splitTransportAndWaybillDocLabels, true);
+  assert.deepEqual(output.imageOptions.map((item) => item.typeCode), ["label", "waybillDoc"]);
+  assert.equal(output.imageOptions[0].templateName, undefined);
+  assert.ok(!output.imageOptions.some((item) => item.typeCode === "invoice"));
+  assert.deepEqual(buildMyDhlShipmentPayload(draft, config).outputImageProperties, buildOutputImageProperties(config));
+});
+
+test("label size and optional documents follow settings", () => {
+  const output = buildOutputImageProperties({ dhlLabelSize: "label4x6", dhlAttachWaybill: false, dhlAttachReceipt: true });
+  assert.deepEqual(output.imageOptions.map((item) => item.typeCode), ["label", "receipt"]);
+  assert.equal(output.imageOptions[0].templateName, "ECOM26_84_001");
+  assert.equal(buildOutputImageProperties({ dhlLabelSize: "a4" }).imageOptions[0].templateName, "ECOM26_84_A4_001");
+  assert.equal(cleanLabelSize("nonsense"), "default");
+  assert.equal(cleanLabelSize("a4"), "a4");
+});
+
+test("extracts every returned document with labels first", () => {
+  const documents = extractMyDhlDocuments([
+    { typeCode: "waybillDoc", imageFormat: "PDF", content: "V0FZ" },
+    { typeCode: "label", imageFormat: "PDF", content: "TEFC" },
+    { typeCode: "receipt", imageFormat: "PDF", content: "UkVD" },
+    { typeCode: "label", imageFormat: "PDF", content: "" },
+  ]);
+  assert.deepEqual(documents.map((item) => item.kind), ["label", "waybill", "receipt"]);
+  assert.ok(documents.every((item) => item.tooLarge === false && item.base64));
+
+  const result = extractMyDhlShipmentResult({ shipmentTrackingNumber: "JD1", documents: [{ typeCode: "waybillDoc", content: "V0FZ" }, { typeCode: "label", content: "TEFC" }] });
+  assert.equal(result.documents.length, 2);
+  assert.equal(result.labelBase64, "TEFC");
+});
+
+test("documents share one size budget so the label is kept and extras are dropped", () => {
+  const documents = extractMyDhlDocuments([
+    { typeCode: "waybillDoc", content: "W".repeat(60) },
+    { typeCode: "label", content: "L".repeat(60) },
+  ], 100);
+  assert.equal(documents[0].kind, "label");
+  assert.equal(documents[0].tooLarge, false);
+  assert.equal(documents[1].kind, "waybill");
+  assert.equal(documents[1].tooLarge, true);
+  assert.equal(documents[1].base64, "");
+});
+
+test("document filenames are readable and unique per kind", () => {
+  assert.equal(documentFilename("JD1", { kind: "label", format: "PDF" }), "DHL-JD1-label.pdf");
+  assert.equal(documentFilename("JD1", { kind: "label", format: "PDF" }, 1), "DHL-JD1-label-2.pdf");
+  assert.equal(documentFilename("JD1", { kind: "waybill", format: "ZPL" }), "DHL-JD1-waybill.zpl");
 });

@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from "react";
 import ForgeReconciler, { Box, Button, Heading, Inline, Label, MessageBanner, Select, Stack, Text, Textfield, Toggle, xcss } from "@forge/react";
 import { invoke } from "@forge/bridge";
+import { DHL_LABEL_SIZES } from "../shipment-core.mjs";
+
+const LABEL_SIZE_OPTIONS = Object.entries(DHL_LABEL_SIZES).map(([value, item]) => ({ label: item.label, value }));
 
 const UI_BUILD = "DM-COMBINED-RC-20260905-UI7";
 
@@ -56,6 +59,9 @@ const FALLBACK_CONFIG = {
   dhlShippingAccountNumber: "",
   dhlProductCode: "",
   dhlPickupRequestedByDefault: false,
+  dhlLabelSize: "default",
+  dhlAttachWaybill: true,
+  dhlAttachReceipt: false,
   dhlShippingCredentialsConfigured: false,
   deliveredValue: "Delivered",
   inTransitValue: "In Transit",
@@ -526,6 +532,17 @@ function App() {
           <Box xcss={fieldColumnStyle}><FieldBlock label="DHL product code" help="The MyDHL product code used for shipment creation."><Textfield value={config.dhlProductCode || ""} onChange={(e) => patch("dhlProductCode", e.target.value)} /></FieldBlock></Box>
         </Inline>
         <ToggleRow label="Request pickup by default" description="Pre-select pickup on the Create DHL Shipment action. Agents can still change it before submitting." checked={config.dhlPickupRequestedByDefault} onChange={(e) => patch("dhlPickupRequestedByDefault", e.target.checked)} />
+        <Heading as="h4">Shipping documents</Heading>
+        <Text>DHL documents are attached to the hardware ticket as PDFs so the HW team can open and print them.</Text>
+        <Inline space="space.200" shouldWrap>
+          <Box xcss={fieldColumnStyle}>
+            <FieldBlock label="Label size" help="Choose 4 × 6 in for a label printer, or A4 for an office printer. Confirm the layout with a DHL test shipment.">
+              <Select options={LABEL_SIZE_OPTIONS} value={optionFor(LABEL_SIZE_OPTIONS, config.dhlLabelSize || "default")} onChange={(option) => patch("dhlLabelSize", option?.value || "default")} />
+            </FieldBlock>
+          </Box>
+        </Inline>
+        <ToggleRow label="Attach waybill document" description="The waybill copy that travels with the parcel. Recommended." checked={config.dhlAttachWaybill !== false} onChange={(e) => patch("dhlAttachWaybill", e.target.checked)} />
+        <ToggleRow label="Attach shipment receipt" description="DHL's receipt for your records." checked={config.dhlAttachReceipt === true} onChange={(e) => patch("dhlAttachReceipt", e.target.checked)} />
         <Inline space="space.200" shouldWrap>
           <Box xcss={fieldColumnStyle}><FieldBlock label="DHL Express API username"><Textfield value={shippingUsername} onChange={(e) => setShippingUsername(e.target.value)} placeholder={config.dhlShippingCredentialsConfigured ? "Stored securely — enter only to replace" : "Enter MyDHL API username"} /></FieldBlock></Box>
           <Box xcss={fieldColumnStyle}><FieldBlock label="DHL Express API password"><Textfield type="password" value={shippingPassword} onChange={(e) => setShippingPassword(e.target.value)} placeholder={config.dhlShippingCredentialsConfigured ? "••••••••••••••••" : "Enter MyDHL API password"} /></FieldBlock></Box>

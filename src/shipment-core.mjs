@@ -184,7 +184,87 @@ export function buildMyDhlShipmentPayload(draft = {}, config = {}, now = new Dat
       description: cleanShipmentText(draft.contentsDescription || draft.package.description || "Hardware", 200),
       unitOfMeasurement: "metric",
     },
+    outputImageProperties: buildOutputImageProperties(config),
   };
+}
+
+// Label sizes an admin can pick. "default" lets DHL use the account's standard
+// label template; the others name a MyDHL template explicitly.
+export const DHL_LABEL_SIZES = {
+  default: { label: "DHL default", templateName: null },
+  label4x6: { label: "4 × 6 in label printer", templateName: "ECOM26_84_001" },
+  a4: { label: "A4 paper", templateName: "ECOM26_84_A4_001" },
+};
+
+export function cleanLabelSize(value) {
+  return Object.prototype.hasOwnProperty.call(DHL_LABEL_SIZES, value) ? value : "default";
+}
+
+// Asks DHL to return each document as a separate PDF so they can be attached
+// to the hardware ticket individually. The commercial invoice is not requested
+// because customs shipments are blocked until customs data is supported.
+export function buildOutputImageProperties(config = {}) {
+  const label = { typeCode: "label", isRequested: true };
+  const templateName = DHL_LABEL_SIZES[cleanLabelSize(config.dhlLabelSize)].templateName;
+  if (templateName) label.templateName = templateName;
+
+  const imageOptions = [label];
+  if (config.dhlAttachWaybill !== false) {
+    imageOptions.push({ typeCode: "waybillDoc", isRequested: true, hideAccountNumber: true, numberOfCopies: 1 });
+  }
+  if (config.dhlAttachReceipt === true) {
+    imageOptions.push({ typeCode: "receipt", isRequested: true });
+  }
+
+  return {
+    encodingFormat: "pdf",
+    imageOptions,
+    splitTransportAndWaybillDocLabels: true,
+    allDocumentsInOneImage: false,
+    splitDocumentsByPages: false,
+    splitInvoiceAndReceipt: true,
+    receiptAndLabelsInOneImage: false,
+  };
+}
+
+const DOCUMENT_KINDS = [
+  [/label/i, "label"],
+  [/waybill/i, "waybill"],
+  [/receipt/i, "receipt"],
+  [/invoice/i, "invoice"],
+];
+
+function documentKind(document) {
+  const type = String(document?.typeCode || document?.type || "");
+  return DOCUMENT_KINDS.find(([pattern]) => pattern.test(type))?.[1] || "document";
+}
+
+// Keeps returned documents within one shared size budget (labels first), so a
+// large response cannot push unbounded base64 data through the Forge function.
+export function extractMyDhlDocuments(documents = [], maxTotalChars = MAX_DHL_LABEL_BASE64_CHARS) {
+  const items = (Array.isArray(documents) ? documents : [])
+    .map((document, index) => ({
+      index,
+      kind: documentKind(document),
+      format: cleanShipmentText(document?.imageFormat || document?.format || "PDF", 20).toUpperCase(),
+      content: String(document?.content || "").trim(),
+    }))
+    .filter((item) => item.content)
+    .sort((a, b) => (a.kind === "label" ? 0 : 1) - (b.kind === "label" ? 0 : 1) || a.index - b.index);
+
+  let used = 0;
+  return items.map(({ kind, format, content }) => {
+    const tooLarge = used + content.length > maxTotalChars;
+    if (!tooLarge) used += content.length;
+    return { kind, format, base64: tooLarge ? "" : content, tooLarge };
+  });
+}
+
+export function documentFilename(trackingNumber, document, sameKindIndex = 0) {
+  const format = String(document?.format || "PDF").toUpperCase();
+  const extension = format.includes("PNG") ? "png" : format.includes("ZPL") ? "zpl" : "pdf";
+  const suffix = sameKindIndex > 0 ? `-${sameKindIndex + 1}` : "";
+  return `DHL-${cleanShipmentText(trackingNumber, 100) || "shipment"}-${document?.kind || "document"}${suffix}.${extension}`;
 }
 
 export function extractMyDhlShipmentResult(response = {}) {
@@ -196,18 +276,18 @@ export function extractMyDhlShipmentResult(response = {}) {
     100
   );
   const dispatchConfirmationNumber = cleanShipmentText(response.dispatchConfirmationNumber, 100);
-  const documents = Array.isArray(response.documents) ? response.documents : [];
-  const label = documents.find((document) => /label/i.test(String(document?.typeCode || document?.type || ""))) || documents[0] || null;
-  const rawLabel = String(label?.content || "").trim();
-  const labelTooLarge = rawLabel.length > MAX_DHL_LABEL_BASE64_CHARS;
+  const rawDocuments = Array.isArray(response.documents) ? response.documents : [];
+  const documents = extractMyDhlDocuments(rawDocuments);
+  const label = documents.find((document) => document.kind === "label") || documents[0] || null;
   return {
     ok: Boolean(trackingNumber),
     trackingNumber,
     dispatchConfirmationNumber,
-    labelBase64: labelTooLarge ? "" : rawLabel,
-    labelFormat: cleanShipmentText(label?.imageFormat || label?.format || label?.typeCode, 50),
-    labelTooLarge,
-    rawDocumentCount: documents.length,
+    documents,
+    labelBase64: label?.base64 || "",
+    labelFormat: label?.format || "",
+    labelTooLarge: Boolean(label?.tooLarge),
+    rawDocumentCount: rawDocuments.length,
   };
 }
 

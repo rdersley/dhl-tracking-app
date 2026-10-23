@@ -1,4 +1,5 @@
 import { kvs } from "@forge/kvs";
+import { cleanLabelSize } from "./shipment-core.mjs";
 
 export const CONFIG_KEY = "delivery-manager-config-v1";
 export const DHL_API_KEY_SECRET = "delivery-manager-dhl-api-key";
@@ -44,6 +45,9 @@ export const DEFAULT_CONFIG = {
   dhlShippingAccountNumber: "",
   dhlProductCode: "",
   dhlPickupRequestedByDefault: false,
+  dhlLabelSize: "default",
+  dhlAttachWaybill: true,
+  dhlAttachReceipt: false,
   deliveredValue: "Delivered",
   inTransitValue: "In Transit",
   outForDeliveryValue: "Out for Delivery",
@@ -123,6 +127,9 @@ export async function getDeliveryManagerConfig() {
     dhlShippingAccountNumber: cleanText(saved.dhlShippingAccountNumber, "", 100),
     dhlProductCode: cleanText(saved.dhlProductCode, "", 20),
     dhlPickupRequestedByDefault: saved.dhlPickupRequestedByDefault === true,
+    dhlLabelSize: cleanLabelSize(saved.dhlLabelSize),
+    dhlAttachWaybill: saved.dhlAttachWaybill !== false,
+    dhlAttachReceipt: saved.dhlAttachReceipt === true,
   };
 }
 
@@ -150,6 +157,9 @@ export async function saveDeliveryManagerConfig(config) {
     dhlShippingAccountNumber: cleanText(config?.dhlShippingAccountNumber, "", 100),
     dhlProductCode: cleanText(config?.dhlProductCode, "", 20),
     dhlPickupRequestedByDefault: config?.dhlPickupRequestedByDefault === true,
+    dhlLabelSize: cleanLabelSize(config?.dhlLabelSize),
+    dhlAttachWaybill: config?.dhlAttachWaybill !== false,
+    dhlAttachReceipt: config?.dhlAttachReceipt === true,
     deliveredValue: cleanText(config?.deliveredValue, DEFAULT_CONFIG.deliveredValue, 100),
     inTransitValue: cleanText(config?.inTransitValue, DEFAULT_CONFIG.inTransitValue, 100),
     outForDeliveryValue: cleanText(config?.outForDeliveryValue, DEFAULT_CONFIG.outForDeliveryValue, 100),
