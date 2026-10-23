@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import ForgeReconciler, { Box, Button, Heading, Inline, Label, MessageBanner, Select, Stack, Text, Textfield, Toggle, xcss } from "@forge/react";
 import { invoke } from "@forge/bridge";
 import { DHL_LABEL_SIZES, MAX_PACKAGE_PRESETS } from "../shipment-core.mjs";
+import { RECEIVER_PARTS, REPORTER_EMAIL, REPORTER_NAME } from "../receiver-prefill-core.mjs";
 
 const SHIPPING_ENVIRONMENT_OPTIONS = [
   { label: "Simulate (no DHL calls)", value: "simulate" },
@@ -70,6 +71,7 @@ const FALLBACK_CONFIG = {
   dhlAttachReceipt: false,
   dhlPackagePresets: [],
   dhlDefaultPackagePreset: "",
+  dhlReceiverFieldMap: {},
   dhlShippingCredentialsConfigured: false,
   deliveredValue: "Delivered",
   inTransitValue: "In Transit",
@@ -583,6 +585,24 @@ function App() {
         </Inline>
         <ToggleRow label="Attach waybill document" description="The waybill copy that travels with the parcel. Recommended." checked={config.dhlAttachWaybill !== false} onChange={(e) => patch("dhlAttachWaybill", e.target.checked)} />
         <ToggleRow label="Attach shipment receipt" description="DHL's receipt for your records." checked={config.dhlAttachReceipt === true} onChange={(e) => patch("dhlAttachReceipt", e.target.checked)} />
+        <Heading as="h4">Receiver address from the linked SD ticket</Heading>
+        <Text>When an agent opens Create DHL Shipment, these fields are read from the SD ticket linked to the hardware ticket (or from the hardware ticket itself if the SD value is empty) and used to fill in the receiver. Agents can still change anything before submitting. Leave a line as "Not used" to type it by hand.</Text>
+        <Inline space="space.200" shouldWrap>
+          {RECEIVER_PARTS.map((part) => {
+            const options = [
+              { label: "Not used", value: "" },
+              ...(part.key === "name" || part.key === "company" ? [{ label: "SD reporter: name", value: REPORTER_NAME }] : []),
+              ...(part.key === "email" ? [{ label: "SD reporter: email", value: REPORTER_EMAIL }] : []),
+              ...fields,
+            ];
+            const current = (config.dhlReceiverFieldMap || {})[part.key] || "";
+            return <Box xcss={fieldColumnStyle} key={part.key}>
+              <FieldBlock label={part.label} help={part.key === "countryCode" ? "Two-letter codes are used as-is; common country names such as Ireland or United Kingdom are converted." : undefined}>
+                <Select options={options} value={optionFor(options, current) || options[0]} onChange={(option) => patch("dhlReceiverFieldMap", { ...(config.dhlReceiverFieldMap || {}), [part.key]: option?.value || "" })} />
+              </FieldBlock>
+            </Box>;
+          })}
+        </Inline>
         <Heading as="h4">Package presets</Heading>
         <Text>Common box sizes the HW team can pick on the Create DHL Shipment form. Agents can still change the values before submitting. Save changes after adding or removing presets.</Text>
         <Inline space="space.200" shouldWrap>

@@ -1,5 +1,6 @@
 import { kvs } from "@forge/kvs";
 import { cleanDefaultPackagePreset, cleanLabelSize, cleanPackagePresets } from "./shipment-core.mjs";
+import { cleanReceiverFieldMap } from "./receiver-prefill-core.mjs";
 
 export const CONFIG_KEY = "delivery-manager-config-v1";
 export const DHL_API_KEY_SECRET = "delivery-manager-dhl-api-key";
@@ -50,6 +51,7 @@ export const DEFAULT_CONFIG = {
   dhlAttachReceipt: false,
   dhlPackagePresets: [],
   dhlDefaultPackagePreset: "",
+  dhlReceiverFieldMap: {},
   deliveredValue: "Delivered",
   inTransitValue: "In Transit",
   outForDeliveryValue: "Out for Delivery",
@@ -143,6 +145,7 @@ export async function getDeliveryManagerConfig() {
     dhlAttachWaybill: saved.dhlAttachWaybill !== false,
     dhlAttachReceipt: saved.dhlAttachReceipt === true,
     ...cleanPresetSettings(saved),
+    dhlReceiverFieldMap: cleanReceiverFieldMap(saved.dhlReceiverFieldMap),
   };
 }
 
@@ -174,6 +177,7 @@ export async function saveDeliveryManagerConfig(config) {
     dhlAttachWaybill: config?.dhlAttachWaybill !== false,
     dhlAttachReceipt: config?.dhlAttachReceipt === true,
     ...cleanPresetSettings(config),
+    dhlReceiverFieldMap: cleanReceiverFieldMap(config?.dhlReceiverFieldMap),
     deliveredValue: cleanText(config?.deliveredValue, DEFAULT_CONFIG.deliveredValue, 100),
     inTransitValue: cleanText(config?.inTransitValue, DEFAULT_CONFIG.inTransitValue, 100),
     outForDeliveryValue: cleanText(config?.outForDeliveryValue, DEFAULT_CONFIG.outForDeliveryValue, 100),
