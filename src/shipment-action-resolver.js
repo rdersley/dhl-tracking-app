@@ -204,6 +204,8 @@ async function inspect(issueKey, config) {
     accountConfigured: isSimulated(config) || Boolean(config.dhlShippingAccountNumber || config.dhlAccountNumber),
     productConfigured: isSimulated(config) || Boolean(config.dhlProductCode),
     pickupRequestedByDefault: config.dhlPickupRequestedByDefault === true,
+    packagePresets: config.dhlPackagePresets || [],
+    defaultPackagePreset: config.dhlDefaultPackagePreset || "",
   };
 }
 

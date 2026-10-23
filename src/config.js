@@ -1,5 +1,5 @@
 import { kvs } from "@forge/kvs";
-import { cleanLabelSize } from "./shipment-core.mjs";
+import { cleanDefaultPackagePreset, cleanLabelSize, cleanPackagePresets } from "./shipment-core.mjs";
 
 export const CONFIG_KEY = "delivery-manager-config-v1";
 export const DHL_API_KEY_SECRET = "delivery-manager-dhl-api-key";
@@ -48,6 +48,8 @@ export const DEFAULT_CONFIG = {
   dhlLabelSize: "default",
   dhlAttachWaybill: true,
   dhlAttachReceipt: false,
+  dhlPackagePresets: [],
+  dhlDefaultPackagePreset: "",
   deliveredValue: "Delivered",
   inTransitValue: "In Transit",
   outForDeliveryValue: "Out for Delivery",
@@ -109,6 +111,14 @@ function cleanShippingEnvironment(value) {
   return environment === "production" || environment === "simulate" ? environment : "test";
 }
 
+function cleanPresetSettings(source) {
+  const dhlPackagePresets = cleanPackagePresets(source?.dhlPackagePresets);
+  return {
+    dhlPackagePresets,
+    dhlDefaultPackagePreset: cleanDefaultPackagePreset(source?.dhlDefaultPackagePreset, dhlPackagePresets),
+  };
+}
+
 export async function getDeliveryManagerConfig() {
   const saved = (await kvs.get(CONFIG_KEY)) || {};
   const environment = cleanShippingEnvironment(saved.dhlShippingEnvironment || DEFAULT_CONFIG.dhlShippingEnvironment);
@@ -132,6 +142,7 @@ export async function getDeliveryManagerConfig() {
     dhlLabelSize: cleanLabelSize(saved.dhlLabelSize),
     dhlAttachWaybill: saved.dhlAttachWaybill !== false,
     dhlAttachReceipt: saved.dhlAttachReceipt === true,
+    ...cleanPresetSettings(saved),
   };
 }
 
@@ -162,6 +173,7 @@ export async function saveDeliveryManagerConfig(config) {
     dhlLabelSize: cleanLabelSize(config?.dhlLabelSize),
     dhlAttachWaybill: config?.dhlAttachWaybill !== false,
     dhlAttachReceipt: config?.dhlAttachReceipt === true,
+    ...cleanPresetSettings(config),
     deliveredValue: cleanText(config?.deliveredValue, DEFAULT_CONFIG.deliveredValue, 100),
     inTransitValue: cleanText(config?.inTransitValue, DEFAULT_CONFIG.inTransitValue, 100),
     outForDeliveryValue: cleanText(config?.outForDeliveryValue, DEFAULT_CONFIG.outForDeliveryValue, 100),
