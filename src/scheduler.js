@@ -1,6 +1,6 @@
 import { runConfiguredDhl as runDhl } from "./dhl-runtime.js";
 import { runHardwareSync } from "./hardware-sync.js";
-import { shouldRunDhl } from "./scheduler-core.mjs";
+import { schedulerPlan, shouldRunDhl } from "./scheduler-core.mjs";
 import { getDeliveryManagerConfig } from "./config.js";
 import { saveDeliveryManagerHealth } from "./health.js";
 
@@ -44,21 +44,30 @@ export async function runCombinedScheduler() {
     return health;
   }
 
-  let hardware = null;
-  let dhl = null;
+  const plan = schedulerPlan(config);
+  let hardware = { ok: true, skipped: true, reason: "disabled" };
+  let dhl = { ok: true, skipped: true, reason: "disabled" };
 
-  try {
-    hardware = await runHardwareSync(config);
-  } catch (error) {
-    hardware = { ok: false, error: String(error) };
-    console.log(`❌ Hardware reconciliation failed: ${String(error)}`);
+  if (plan.hardware) {
+    try {
+      hardware = await runHardwareSync(config);
+    } catch (error) {
+      hardware = { ok: false, error: String(error) };
+      console.log(`❌ Hardware reconciliation failed: ${String(error)}`);
+    }
+  } else {
+    console.log("⏭️ Hardware reconciliation is switched off in Delivery Manager settings");
   }
 
-  try {
-    dhl = await runDhl(config);
-  } catch (error) {
-    dhl = { ok: false, skipped: false, error: String(error) };
-    console.log(`❌ DHL polling failed: ${String(error)}`);
+  if (plan.dhl) {
+    try {
+      dhl = await runDhl(config);
+    } catch (error) {
+      dhl = { ok: false, skipped: false, error: String(error) };
+      console.log(`❌ DHL polling failed: ${String(error)}`);
+    }
+  } else {
+    console.log("⏭️ Scheduled DHL tracking is switched off in Delivery Manager settings");
   }
 
   const health = {
