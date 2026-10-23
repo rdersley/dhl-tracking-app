@@ -5,6 +5,7 @@ import ForgeReconciler, {
   Checkbox,
   Heading,
   Label,
+  Select,
   SectionMessage,
   Spinner,
   Stack,
@@ -14,6 +15,9 @@ import ForgeReconciler, {
 } from "@forge/react";
 import { invoke, view } from "@forge/bridge";
 import { requiresCustomsDeclaration } from "../shipment-core.mjs";
+import { SIMULATION_OUTCOMES } from "../dhl-simulator.mjs";
+
+const OUTCOME_OPTIONS = Object.entries(SIMULATION_OUTCOMES).map(([value, item]) => ({ label: item.label, value }));
 
 const emptyParty = { name: "", company: "", address1: "", address2: "", city: "", county: "", postalCode: "", countryCode: "IE", phone: "", email: "" };
 
@@ -25,6 +29,7 @@ function App() {
   const [result, setResult] = useState(null);
   const [confirmProduction, setConfirmProduction] = useState(false);
   const [confirmCheckedMyDhl, setConfirmCheckedMyDhl] = useState(false);
+  const [simulateOutcome, setSimulateOutcome] = useState("success");
   const [draft, setDraft] = useState({
     reference: "",
     shipper: { ...emptyParty },
@@ -86,7 +91,7 @@ function App() {
     setBusy(true);
     setResult(null);
     try {
-      const response = await invoke("createDhlShipment", { issueKey, draft, confirmProduction });
+      const response = await invoke("createDhlShipment", { issueKey, draft, confirmProduction, simulateOutcome });
       setResult(response);
       if (response?.created && response?.trackingNumber) {
         setState((current) => ({ ...(current || {}), existingTracking: response.trackingNumber, shipmentRecorded: true }));
@@ -117,13 +122,21 @@ function App() {
   const pending = state?.shipmentPending === true;
   const customsRequired = requiresCustomsDeclaration(draft);
   const isProduction = state?.shippingEnvironment === "production";
+  const isSimulate = state?.shippingEnvironment === "simulate";
   const ready = state?.shippingEnabled && state?.credentialsConfigured && state?.accountConfigured && state?.productConfigured && !existing && !pending && !customsRequired && (!isProduction || confirmProduction);
 
   return (
     <Stack space="space.200">
       <Heading as="h3">Create DHL Shipment</Heading>
       <Text>Hardware ticket: {issueKey}</Text>
-      <Text>Environment: {isProduction ? "Production" : "DHL test"}</Text>
+      <Text>Environment: {isProduction ? "Production" : isSimulate ? "Simulated (DHL is not contacted)" : "DHL test"}</Text>
+      {isSimulate && !existing && (
+        <SectionMessage appearance="information" title="Simulate mode">
+          <Text>No real shipment is created. The ticket is updated as if DHL accepted it, with a SIM- tracking number and SIMULATED PDF documents. Use test tickets only.</Text>
+          <Label labelFor="simulate-outcome">Simulated DHL response</Label>
+          <Select inputId="simulate-outcome" options={OUTCOME_OPTIONS} value={OUTCOME_OPTIONS.find((item) => item.value === simulateOutcome)} onChange={(option) => setSimulateOutcome(option?.value || "success")} />
+        </SectionMessage>
+      )}
 
       {existing && (
         <SectionMessage appearance="warning" title="Shipment already exists">
@@ -208,7 +221,7 @@ function App() {
       )}
 
       <ButtonGroup>
-        {!existing && !pending && <Button appearance="primary" onClick={createShipment} isDisabled={busy || !ready}>{busy ? "Creating…" : isProduction ? "Create LIVE DHL Shipment" : "Create DHL Test Shipment"}</Button>}
+        {!existing && !pending && <Button appearance="primary" onClick={createShipment} isDisabled={busy || !ready}>{busy ? "Creating…" : isProduction ? "Create LIVE DHL Shipment" : isSimulate ? "Create Simulated Shipment" : "Create DHL Test Shipment"}</Button>}
         <Button onClick={() => view.close()} appearance="subtle">Close</Button>
       </ButtonGroup>
     </Stack>

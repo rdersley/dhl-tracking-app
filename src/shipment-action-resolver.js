@@ -19,6 +19,35 @@ import {
   validateShipmentDraft,
 } from "./shipment-core.mjs";
 import { classifyDhlShipmentHttpFailure } from "./dhl-shipping-http-core.mjs";
+import { simulateMyDhlCreateShipment } from "./dhl-simulator.mjs";
+
+function isSimulated(config) {
+  return config?.dhlShippingEnvironment === "simulate";
+}
+
+// Simulate mode must pass the same draft validation as a real request, so
+// placeholder account/product values stand in for settings not yet entered.
+function withSimulationDefaults(config) {
+  return {
+    ...config,
+    dhlShippingAccountNumber: config.dhlShippingAccountNumber || config.dhlAccountNumber || "SIMULATED",
+    dhlProductCode: config.dhlProductCode || "P",
+  };
+}
+
+// Mimics the subset of the fetch Response API used below, so a simulated
+// request goes through exactly the same success/failure handling as a real one.
+function simulatedFetch(requestBody, outcome) {
+  const simulated = simulateMyDhlCreateShipment(requestBody, outcome);
+  if (simulated.networkError) throw new Error("Simulated network timeout");
+  return {
+    ok: simulated.status >= 200 && simulated.status < 300,
+    status: simulated.status,
+    headers: { get: () => null },
+    text: async () => simulated.body,
+    json: async () => JSON.parse(simulated.body),
+  };
+}
 
 const resolver = new Resolver();
 const SHIPMENT_PROPERTY = "nuvriqo.delivery-manager.dhl-shipment";
@@ -170,9 +199,10 @@ async function inspect(issueKey, config) {
     recorded,
     shippingEnabled: config.dhlShippingEnabled === true,
     shippingEnvironment: config.dhlShippingEnvironment,
-    credentialsConfigured: await hasDhlShippingCredentials(),
-    accountConfigured: Boolean(config.dhlShippingAccountNumber || config.dhlAccountNumber),
-    productConfigured: Boolean(config.dhlProductCode),
+    // Simulate mode needs no DHL credentials, account or product code.
+    credentialsConfigured: isSimulated(config) || await hasDhlShippingCredentials(),
+    accountConfigured: isSimulated(config) || Boolean(config.dhlShippingAccountNumber || config.dhlAccountNumber),
+    productConfigured: isSimulated(config) || Boolean(config.dhlProductCode),
     pickupRequestedByDefault: config.dhlPickupRequestedByDefault === true,
   };
 }
@@ -258,7 +288,10 @@ resolver.define("createDhlShipment", async ({ payload }) => {
   const draft = payload?.draft || {};
   if (!issueKey) return { ok: false, error: "No Jira issue was supplied." };
 
-  const config = await getDeliveryManagerConfig();
+  const savedConfig = await getDeliveryManagerConfig();
+  const simulate = isSimulated(savedConfig);
+  const config = simulate ? withSimulationDefaults(savedConfig) : savedConfig;
+  const label = simulate ? "[SIMULATED] " : "";
   if (!config.dhlShippingEnabled) return { ok: false, disabled: true, error: "DHL shipment creation is disabled in Delivery Manager settings." };
   if (config.dhlShippingEnvironment === "production" && payload?.confirmProduction !== true) {
     return { ok: false, productionConfirmationRequired: true, error: "Production shipment creation requires explicit confirmation." };
@@ -277,8 +310,8 @@ resolver.define("createDhlShipment", async ({ payload }) => {
   const validation = validateShipmentDraft(draft, config);
   if (!validation.ok) return { ok: false, validation: true, errors: validation.errors, error: validation.errors.join("; ") };
 
-  const credentials = await getDhlShippingCredentials();
-  if (!credentials.username || !credentials.password) return { ok: false, error: "DHL shipping credentials are not configured." };
+  const credentials = simulate ? null : await getDhlShippingCredentials();
+  if (!simulate && (!credentials.username || !credentials.password)) return { ok: false, error: "DHL shipping credentials are not configured." };
 
   let requestBody;
   try {
@@ -299,16 +332,19 @@ resolver.define("createDhlShipment", async ({ payload }) => {
     return { ok: false, duplicate: true, pending: true, error: "Another shipment request for this ticket started at the same time. DHL was not contacted by this request; check the ticket again in a moment." };
   }
 
-  const base = String(config.dhlShippingApiUrl || "").replace(/\/$/, "");
-  const url = `${base}/shipments`;
-  const auth = Buffer.from(`${credentials.username}:${credentials.password}`).toString("base64");
   let response;
   try {
-    response = await api.fetch(url, {
-      method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Basic ${auth}` },
-      body: JSON.stringify(requestBody),
-    });
+    response = simulate
+      ? simulatedFetch(requestBody, payload?.simulateOutcome)
+      : await api.fetch(`${String(config.dhlShippingApiUrl || "").replace(/\/$/, "")}/shipments`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString("base64")}`,
+        },
+        body: JSON.stringify(requestBody),
+      });
   } catch (error) {
     return {
       pending: true,
@@ -365,7 +401,8 @@ resolver.define("createDhlShipment", async ({ payload }) => {
   const transitionResult = config.transitionsEnabled ? await transitionIssue(issueKey, config.hwDispatchedStatus) : { ok: true, skipped: true };
 
   if (config.commentsEnabled) {
-    const parts = [`DHL shipment created. Tracking number: ${result.trackingNumber}.`];
+    const parts = [`${label}DHL shipment created. Tracking number: ${result.trackingNumber}.`];
+    if (simulate) parts.push("This is a simulated shipment: DHL was not contacted and nothing will be collected or charged.");
     if (result.dispatchConfirmationNumber) parts.push(`Dispatch confirmation: ${result.dispatchConfirmationNumber}.`);
     if (documentsResult.attached.length) parts.push(`Attached to this issue for printing: ${documentsResult.attached.map((item) => item.filename).join(", ")}.`);
     if (documentsResult.tooLarge.length) parts.push(`Not attached because they exceeded the size limit (download from MyDHL): ${documentsResult.tooLarge.join(", ")}.`);

@@ -103,8 +103,10 @@ function cleanText(value, fallback = "", max = 200) {
   return text.slice(0, max);
 }
 
+// "simulate" never contacts DHL; see dhl-simulator.mjs.
 function cleanShippingEnvironment(value) {
-  return String(value || "").toLowerCase() === "production" ? "production" : "test";
+  const environment = String(value || "").toLowerCase();
+  return environment === "production" || environment === "simulate" ? environment : "test";
 }
 
 export async function getDeliveryManagerConfig() {
