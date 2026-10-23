@@ -108,7 +108,8 @@ async function reconcileDispatchedHardware(config) {
   let missingLinks = 0;
 
   for (const hwIssue of hwIssues) {
-    const sourceKey = getLinkedIssueKey(hwIssue.fields?.issuelinks || [], config.sdProject);
+    // getLinkedIssueKey reads issue.fields.issuelinks, so pass the issue itself.
+    const sourceKey = getLinkedIssueKey(hwIssue, config.sdProject);
     if (!sourceKey) {
       missingLinks += 1;
       continue;

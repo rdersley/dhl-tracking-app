@@ -129,3 +129,11 @@ test("dispatch repair corrects changed HW values without repeating transition", 
   const sd = { fields: { customfield_10417: "JD001", customfield_10433: "2026-08-31", status: { name: "Dispatched" } } };
   assert.deepEqual(buildDispatchRepair(hw, sd, config), { ready: true, fields: { customfield_10417: "JD002" }, transition: false });
 });
+
+test("dispatch reconciliation finds the linked SD ticket from a searched HW issue", () => {
+  // Shape returned by /search/jql with fields=issuelinks; hardware-sync must
+  // pass the issue itself, not the issuelinks array.
+  const hwIssue = { key: "HW-9", fields: { issuelinks: [{ type: { name: "Problem/Incident" }, inwardIssue: { key: "SD-55" } }] } };
+  assert.equal(getLinkedIssueKey(hwIssue, "SD"), "SD-55");
+  assert.equal(getLinkedIssueKey(hwIssue.fields.issuelinks, "SD"), null, "passing the links array finds nothing");
+});
