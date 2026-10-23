@@ -20,6 +20,8 @@ import {
 } from "./shipment-core.mjs";
 import { classifyDhlShipmentHttpFailure } from "./dhl-shipping-http-core.mjs";
 import { simulateMyDhlCreateShipment } from "./dhl-simulator.mjs";
+import { getLinkedIssueKeys } from "./hardware-core.mjs";
+import { buildReceiverPrefill, receiverSourceFields } from "./receiver-prefill-core.mjs";
 
 function isSimulated(config) {
   return config?.dhlShippingEnvironment === "simulate";
@@ -89,8 +91,41 @@ async function deleteShipmentProperty(issueKey) {
 }
 
 async function getHardwareIssue(issueKey, config) {
-  const fields = ["summary", "project", "status", config.trackingField, config.dateSentField, config.deliveryStatusField].filter(Boolean);
-  return jiraJson(route`/rest/api/3/issue/${issueKey}?fields=${fields.join(",")}`);
+  const fields = [
+    "summary", "project", "status", "issuelinks",
+    config.trackingField, config.dateSentField, config.deliveryStatusField,
+    ...receiverSourceFields(config.dhlReceiverFieldMap),
+  ].filter(Boolean);
+  return jiraJson(route`/rest/api/3/issue/${issueKey}?fields=${[...new Set(fields)].join(",")}`);
+}
+
+// Reads the admin-mapped receiver fields from the SD ticket linked to this
+// hardware ticket. A missing link or unreadable SD ticket is not an error: the
+// agent simply types the address, and the result says why nothing was filled.
+async function loadReceiverPrefill(hwIssue, config) {
+  const map = config.dhlReceiverFieldMap || {};
+  const sourceFields = receiverSourceFields(map);
+  if (!sourceFields.length) return { configured: false };
+
+  const linkedKeys = getLinkedIssueKeys(hwIssue, config.sdProject);
+  const sourceKey = linkedKeys[0] || null;
+  let sdIssue = null;
+  let warning = null;
+  if (sourceKey) {
+    const result = await jiraJson(route`/rest/api/3/issue/${sourceKey}?fields=${sourceFields.join(",")}`);
+    if (result.ok) sdIssue = result.data;
+    else warning = `Could not read ${sourceKey} to fill in the receiver.`;
+  }
+
+  const { receiver, filled } = buildReceiverPrefill(sdIssue, hwIssue, map);
+  return {
+    configured: true,
+    sourceKey: sdIssue ? sourceKey : null,
+    otherLinkedKeys: linkedKeys.slice(1),
+    receiver,
+    filled,
+    warning: warning || (!sourceKey ? `No linked ${config.sdProject} ticket was found.` : null),
+  };
 }
 
 async function transitionIssue(issueKey, targetStatus) {
@@ -247,7 +282,9 @@ resolver.define("checkDhlShipment", async ({ payload }) => {
   const issueKey = String(payload?.issueKey || "").trim();
   if (!issueKey) return { ok: false, error: "No Jira issue was supplied." };
   const config = await getDeliveryManagerConfig();
-  return inspect(issueKey, config);
+  const state = await inspect(issueKey, config);
+  if (!state.ok || state.existingTracking) return state;
+  return { ...state, receiverPrefill: await loadReceiverPrefill({ fields: state.fields }, config) };
 });
 
 resolver.define("validateDhlShipment", async ({ payload }) => {

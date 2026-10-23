@@ -15,6 +15,7 @@ import ForgeReconciler, {
 } from "@forge/react";
 import { invoke, view } from "@forge/bridge";
 import { applyPackagePreset, requiresCustomsDeclaration } from "../shipment-core.mjs";
+import { mergeReceiverPrefill } from "../receiver-prefill-core.mjs";
 import { SIMULATION_OUTCOMES } from "../dhl-simulator.mjs";
 
 const OUTCOME_OPTIONS = Object.entries(SIMULATION_OUTCOMES).map(([value, item]) => ({ label: item.label, value }));
@@ -78,6 +79,11 @@ function App() {
           pickupRequested: response.pickupRequestedByDefault === true,
         }));
         if (response.defaultPackagePreset && !presetId) choosePreset(response.defaultPackagePreset, response.packagePresets);
+        // Only the form's untouched defaults are replaced, so pressing
+        // "Check again" never overwrites what an agent has typed.
+        if (response.receiverPrefill?.filled?.length) {
+          setDraft((current) => ({ ...current, receiver: mergeReceiverPrefill(current.receiver, response.receiverPrefill.receiver, emptyParty) }));
+        }
       }
     } catch (error) {
       setState({ ok: false, error: String(error) });
@@ -204,6 +210,17 @@ function App() {
           <Label labelFor="s-email">Email</Label><Textfield id="s-email" value={draft.shipper.email} onChange={(e) => patchParty("shipper", "email", e.target.value)} />
 
           <Heading as="h4">Recipient</Heading>
+          {state?.receiverPrefill?.configured && state.receiverPrefill.filled?.length > 0 && (
+            <SectionMessage appearance="information" title={`Filled in from ${state.receiverPrefill.sourceKey || issueKey}`}>
+              <Text>Check the recipient details against the ticket before creating the shipment.</Text>
+              {state.receiverPrefill.otherLinkedKeys?.length > 0 && <Text>This hardware ticket is also linked to {state.receiverPrefill.otherLinkedKeys.join(", ")}; only {state.receiverPrefill.sourceKey} was used.</Text>}
+            </SectionMessage>
+          )}
+          {state?.receiverPrefill?.configured && !state.receiverPrefill.filled?.length && (
+            <SectionMessage appearance="warning" title="Recipient not filled in">
+              <Text>{state.receiverPrefill.warning || "The mapped SD fields are empty on this ticket."} Enter the recipient details by hand.</Text>
+            </SectionMessage>
+          )}
           <Label labelFor="r-name">Name</Label><Textfield id="r-name" value={draft.receiver.name} onChange={(e) => patchParty("receiver", "name", e.target.value)} />
           <Label labelFor="r-company">Company</Label><Textfield id="r-company" value={draft.receiver.company} onChange={(e) => patchParty("receiver", "company", e.target.value)} />
           <Label labelFor="r-address1">Address</Label><Textfield id="r-address1" value={draft.receiver.address1} onChange={(e) => patchParty("receiver", "address1", e.target.value)} />
