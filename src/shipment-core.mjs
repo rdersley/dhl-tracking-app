@@ -298,3 +298,61 @@ export function buildShipmentWriteback(result = {}, config = {}) {
   if (config.deliveryStatusField && config.inTransitValue) fields[config.deliveryStatusField] = { value: config.inTransitValue };
   return fields;
 }
+
+// Package presets are defined by an admin in Delivery Manager settings and
+// offered on the Create DHL Shipment form. Invalid rows are dropped rather
+// than saved, so the form never offers a preset DHL would reject.
+export const MAX_PACKAGE_PRESETS = 20;
+
+function presetId(name, used) {
+  const base = cleanShipmentText(name, 40).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "preset";
+  let id = base;
+  for (let n = 2; used.has(id); n += 1) id = `${base}-${n}`;
+  used.add(id);
+  return id;
+}
+
+export function cleanPackagePresets(value) {
+  if (!Array.isArray(value)) return [];
+  const names = new Set();
+  const ids = new Set();
+  const presets = [];
+  for (const item of value) {
+    const name = cleanShipmentText(item?.name, 60);
+    const preset = {
+      name,
+      weightKg: normalizePositiveNumber(item?.weightKg),
+      lengthCm: normalizePositiveNumber(item?.lengthCm),
+      widthCm: normalizePositiveNumber(item?.widthCm),
+      heightCm: normalizePositiveNumber(item?.heightCm),
+      description: cleanShipmentText(item?.description, 200),
+    };
+    if (!name || names.has(name.toLowerCase())) continue;
+    if (!preset.weightKg || !preset.lengthCm || !preset.widthCm || !preset.heightCm) continue;
+    names.add(name.toLowerCase());
+    const existingId = cleanShipmentText(item?.id, 60);
+    preset.id = existingId && !ids.has(existingId) ? (ids.add(existingId), existingId) : presetId(name, ids);
+    presets.push(preset);
+    if (presets.length >= MAX_PACKAGE_PRESETS) break;
+  }
+  return presets;
+}
+
+export function cleanDefaultPackagePreset(id, presets = []) {
+  const value = cleanShipmentText(id, 60);
+  return presets.some((preset) => preset.id === value) ? value : "";
+}
+
+// Copies a preset into the form's package fields (strings, as the form's
+// text fields hold them). Fields the preset leaves blank keep their value.
+export function applyPackagePreset(currentPackage = {}, preset = null) {
+  if (!preset) return { ...currentPackage };
+  return {
+    ...currentPackage,
+    weightKg: String(preset.weightKg),
+    lengthCm: String(preset.lengthCm),
+    widthCm: String(preset.widthCm),
+    heightCm: String(preset.heightCm),
+    description: preset.description || currentPackage.description || "",
+  };
+}

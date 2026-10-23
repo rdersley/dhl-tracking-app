@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import ForgeReconciler, { Box, Button, Heading, Inline, Label, MessageBanner, Select, Stack, Text, Textfield, Toggle, xcss } from "@forge/react";
 import { invoke } from "@forge/bridge";
-import { DHL_LABEL_SIZES } from "../shipment-core.mjs";
+import { DHL_LABEL_SIZES, MAX_PACKAGE_PRESETS } from "../shipment-core.mjs";
 
 const SHIPPING_ENVIRONMENT_OPTIONS = [
   { label: "Simulate (no DHL calls)", value: "simulate" },
@@ -68,6 +68,8 @@ const FALLBACK_CONFIG = {
   dhlLabelSize: "default",
   dhlAttachWaybill: true,
   dhlAttachReceipt: false,
+  dhlPackagePresets: [],
+  dhlDefaultPackagePreset: "",
   dhlShippingCredentialsConfigured: false,
   deliveredValue: "Delivered",
   inTransitValue: "In Transit",
@@ -145,6 +147,7 @@ function App() {
   const [shippingUsername, setShippingUsername] = useState("");
   const [shippingPassword, setShippingPassword] = useState("");
   const [shippingTest, setShippingTest] = useState(null);
+  const [presetDraft, setPresetDraft] = useState({ name: "", weightKg: "", lengthCm: "", widthCm: "", heightCm: "", description: "" });
   const [configStatus, setConfigStatus] = useState("Loading saved settings…");
   const [optionsStatus, setOptionsStatus] = useState("Loading Jira configuration options…");
   const [statusStatus, setStatusStatus] = useState("Loading project statuses…");
@@ -371,6 +374,37 @@ function App() {
     setMessage({ appearance: "success", text: "Field mapping added. Save changes when you are ready." });
   };
 
+  // Package presets are validated again on save (cleanPackagePresets); this
+  // only gives the admin immediate feedback before the row is added.
+  const addPreset = () => {
+    const presets = config.dhlPackagePresets || [];
+    const name = presetDraft.name.trim();
+    const numbers = ["weightKg", "lengthCm", "widthCm", "heightCm"].map((key) => Number(presetDraft[key]));
+    if (!name || numbers.some((value) => !Number.isFinite(value) || value <= 0)) {
+      setMessage({ appearance: "warning", text: "A package preset needs a name and a weight, length, width and height greater than zero." });
+      return;
+    }
+    if (presets.some((preset) => preset.name.toLowerCase() === name.toLowerCase())) {
+      setMessage({ appearance: "warning", text: "A package preset with that name already exists." });
+      return;
+    }
+    if (presets.length >= MAX_PACKAGE_PRESETS) {
+      setMessage({ appearance: "warning", text: `You can save up to ${MAX_PACKAGE_PRESETS} package presets.` });
+      return;
+    }
+    const [weightKg, lengthCm, widthCm, heightCm] = numbers;
+    patch("dhlPackagePresets", [...presets, { name, weightKg, lengthCm, widthCm, heightCm, description: presetDraft.description.trim() }]);
+    setPresetDraft({ name: "", weightKg: "", lengthCm: "", widthCm: "", heightCm: "", description: "" });
+    setMessage({ appearance: "success", text: "Package preset added. Save changes when you are ready." });
+  };
+
+  const removePreset = (index) => {
+    const presets = config.dhlPackagePresets || [];
+    const removed = presets[index];
+    patch("dhlPackagePresets", presets.filter((_, itemIndex) => itemIndex !== index));
+    if (removed && (removed.id || removed.name) === config.dhlDefaultPackagePreset) patch("dhlDefaultPackagePreset", "");
+  };
+
   const removeMapping = (index) => patch("hwFieldMappings", (config.hwFieldMappings || []).filter((_, itemIndex) => itemIndex !== index));
   const allConnectionsHealthy = looksHealthy(configStatus) && looksHealthy(optionsStatus) && looksHealthy(statusStatus);
 
@@ -549,6 +583,31 @@ function App() {
         </Inline>
         <ToggleRow label="Attach waybill document" description="The waybill copy that travels with the parcel. Recommended." checked={config.dhlAttachWaybill !== false} onChange={(e) => patch("dhlAttachWaybill", e.target.checked)} />
         <ToggleRow label="Attach shipment receipt" description="DHL's receipt for your records." checked={config.dhlAttachReceipt === true} onChange={(e) => patch("dhlAttachReceipt", e.target.checked)} />
+        <Heading as="h4">Package presets</Heading>
+        <Text>Common box sizes the HW team can pick on the Create DHL Shipment form. Agents can still change the values before submitting. Save changes after adding or removing presets.</Text>
+        <Inline space="space.200" shouldWrap>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="Preset name" help="For example: Laptop box, Card terminal, Small spares."><Textfield value={presetDraft.name} onChange={(e) => setPresetDraft((current) => ({ ...current, name: e.target.value }))} /></FieldBlock></Box>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="Weight (kg)"><Textfield value={presetDraft.weightKg} onChange={(e) => setPresetDraft((current) => ({ ...current, weightKg: e.target.value }))} /></FieldBlock></Box>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="Length (cm)"><Textfield value={presetDraft.lengthCm} onChange={(e) => setPresetDraft((current) => ({ ...current, lengthCm: e.target.value }))} /></FieldBlock></Box>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="Width (cm)"><Textfield value={presetDraft.widthCm} onChange={(e) => setPresetDraft((current) => ({ ...current, widthCm: e.target.value }))} /></FieldBlock></Box>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="Height (cm)"><Textfield value={presetDraft.heightCm} onChange={(e) => setPresetDraft((current) => ({ ...current, heightCm: e.target.value }))} /></FieldBlock></Box>
+          <Box xcss={fieldColumnStyle}><FieldBlock label="Contents description (optional)"><Textfield value={presetDraft.description} onChange={(e) => setPresetDraft((current) => ({ ...current, description: e.target.value }))} /></FieldBlock></Box>
+        </Inline>
+        <Box><Button onClick={addPreset}>Add package preset</Button></Box>
+        {(config.dhlPackagePresets || []).length === 0 ? <Box xcss={subSectionStyle}><Text>No package presets saved yet.</Text></Box> : null}
+        {(config.dhlPackagePresets || []).map((preset, index) => {
+          const key = preset.id || preset.name;
+          const isDefault = Boolean(config.dhlDefaultPackagePreset) && config.dhlDefaultPackagePreset === key;
+          return <Box xcss={mappingRowStyle} key={`${key}-${index}`}>
+            <Inline spread="space-between" alignBlock="center" space="space.200">
+              <Text>{preset.name}{isDefault ? " (default)" : ""}: {preset.weightKg} kg, {preset.lengthCm} × {preset.widthCm} × {preset.heightCm} cm{preset.description ? ` — ${preset.description}` : ""}</Text>
+              <Inline space="space.100">
+                {preset.id ? <Button appearance="subtle" onClick={() => patch("dhlDefaultPackagePreset", isDefault ? "" : preset.id)}>{isDefault ? "Clear default" : "Make default"}</Button> : <Text>Save to set as default</Text>}
+                <Button appearance="subtle" onClick={() => removePreset(index)}>Remove</Button>
+              </Inline>
+            </Inline>
+          </Box>;
+        })}
         <Inline space="space.200" shouldWrap>
           <Box xcss={fieldColumnStyle}><FieldBlock label="DHL Express API username"><Textfield value={shippingUsername} onChange={(e) => setShippingUsername(e.target.value)} placeholder={config.dhlShippingCredentialsConfigured ? "Stored securely — enter only to replace" : "Enter MyDHL API username"} /></FieldBlock></Box>
           <Box xcss={fieldColumnStyle}><FieldBlock label="DHL Express API password"><Textfield type="password" value={shippingPassword} onChange={(e) => setShippingPassword(e.target.value)} placeholder={config.dhlShippingCredentialsConfigured ? "••••••••••••••••" : "Enter MyDHL API password"} /></FieldBlock></Box>

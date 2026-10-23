@@ -14,7 +14,7 @@ import ForgeReconciler, {
   useProductContext,
 } from "@forge/react";
 import { invoke, view } from "@forge/bridge";
-import { requiresCustomsDeclaration } from "../shipment-core.mjs";
+import { applyPackagePreset, requiresCustomsDeclaration } from "../shipment-core.mjs";
 import { SIMULATION_OUTCOMES } from "../dhl-simulator.mjs";
 
 const OUTCOME_OPTIONS = Object.entries(SIMULATION_OUTCOMES).map(([value, item]) => ({ label: item.label, value }));
@@ -30,6 +30,7 @@ function App() {
   const [confirmProduction, setConfirmProduction] = useState(false);
   const [confirmCheckedMyDhl, setConfirmCheckedMyDhl] = useState(false);
   const [simulateOutcome, setSimulateOutcome] = useState("success");
+  const [presetId, setPresetId] = useState("");
   const [draft, setDraft] = useState({
     reference: "",
     shipper: { ...emptyParty },
@@ -44,8 +45,22 @@ function App() {
     setDraft((current) => ({ ...current, [which]: { ...current[which], [field]: value } }));
   }
 
+  // Editing a value by hand means the package no longer matches a preset.
   function patchPackage(field, value) {
+    setPresetId("");
     setDraft((current) => ({ ...current, package: { ...current.package, [field]: value } }));
+  }
+
+  function choosePreset(id, presets) {
+    const preset = (presets || []).find((item) => item.id === id) || null;
+    setPresetId(preset ? preset.id : "");
+    if (preset) {
+      setDraft((current) => ({
+        ...current,
+        package: applyPackagePreset(current.package, preset),
+        contentsDescription: preset.description || current.contentsDescription,
+      }));
+    }
   }
 
   async function check() {
@@ -62,6 +77,7 @@ function App() {
           reference: current.reference || issueKey,
           pickupRequested: response.pickupRequestedByDefault === true,
         }));
+        if (response.defaultPackagePreset && !presetId) choosePreset(response.defaultPackagePreset, response.packagePresets);
       }
     } catch (error) {
       setState({ ok: false, error: String(error) });
@@ -123,6 +139,13 @@ function App() {
   const customsRequired = requiresCustomsDeclaration(draft);
   const isProduction = state?.shippingEnvironment === "production";
   const isSimulate = state?.shippingEnvironment === "simulate";
+  const presetOptions = [
+    { label: "Custom size", value: "" },
+    ...(state?.packagePresets || []).map((preset) => ({
+      label: `${preset.name} (${preset.weightKg} kg, ${preset.lengthCm}×${preset.widthCm}×${preset.heightCm} cm)`,
+      value: preset.id,
+    })),
+  ];
   const ready = state?.shippingEnabled && state?.credentialsConfigured && state?.accountConfigured && state?.productConfigured && !existing && !pending && !customsRequired && (!isProduction || confirmProduction);
 
   return (
@@ -193,6 +216,12 @@ function App() {
           <Label labelFor="r-email">Email</Label><Textfield id="r-email" value={draft.receiver.email} onChange={(e) => patchParty("receiver", "email", e.target.value)} />
 
           <Heading as="h4">Package</Heading>
+          {presetOptions.length > 1 && (
+            <Stack space="space.050">
+              <Label labelFor="package-preset">Package preset</Label>
+              <Select inputId="package-preset" options={presetOptions} value={presetOptions.find((item) => item.value === presetId) || presetOptions[0]} onChange={(option) => choosePreset(option?.value || "", state?.packagePresets)} />
+            </Stack>
+          )}
           <Label labelFor="weight">Weight (kg)</Label><Textfield id="weight" value={draft.package.weightKg} onChange={(e) => patchPackage("weightKg", e.target.value)} />
           <Label labelFor="length">Length (cm)</Label><Textfield id="length" value={draft.package.lengthCm} onChange={(e) => patchPackage("lengthCm", e.target.value)} />
           <Label labelFor="width">Width (cm)</Label><Textfield id="width" value={draft.package.widthCm} onChange={(e) => patchPackage("widthCm", e.target.value)} />
