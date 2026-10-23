@@ -13,6 +13,91 @@ export function normalizePositiveNumber(value, fallback = 0) {
   return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
+// EU customs union members (ISO codes as used by DHL). Shipments between two of
+// these countries need no customs declaration; anything else (e.g. IE -> GB,
+// IE -> US) does. Same-country shipments are domestic and need none.
+const EU_CUSTOMS_UNION = new Set([
+  "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE",
+  "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+]);
+
+// Decided from the country codes so an agent cannot skip customs by leaving a
+// checkbox unticked. The checkbox can still force a declaration on.
+export function requiresCustomsDeclaration(draft = {}) {
+  if (draft.isCustomsDeclarable === true) return true;
+  const from = normalizeCountryCode(draft.shipper?.countryCode);
+  const to = normalizeCountryCode(draft.receiver?.countryCode);
+  if (from.length !== 2 || to.length !== 2) return false; // reported by validation instead
+  if (from === to) return false;
+  return !(EU_CUSTOMS_UNION.has(from) && EU_CUSTOMS_UNION.has(to));
+}
+
+// MyDHL API expects "YYYY-MM-DDTHH:MM:SSGMT+HH:MM", not ISO-8601 with "Z" or
+// milliseconds. Times are sent in UTC; a short lead time stops DHL rejecting a
+// shipping time that is already in the past when the request arrives.
+const PLANNED_LEAD_MINUTES = 10;
+const MYDHL_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}GMT[+-]\d{2}:\d{2}$/;
+
+export function formatMyDhlDateTime(value, now = new Date()) {
+  if (typeof value === "string" && MYDHL_DATETIME.test(value.trim())) return value.trim();
+  const parsed = value ? new Date(value) : new Date(now.getTime() + PLANNED_LEAD_MINUTES * 60 * 1000);
+  const date = Number.isNaN(parsed.getTime()) ? new Date(now.getTime() + PLANNED_LEAD_MINUTES * 60 * 1000) : parsed;
+  return `${date.toISOString().slice(0, 19)}GMT+00:00`;
+}
+
+// The shipment record (a Jira issue property) moves through:
+//   none -> pending (written BEFORE calling DHL) -> created
+// A pending record that never completed means the DHL outcome is unknown, so it
+// blocks another attempt until someone has checked MyDHL and cleared it.
+export function shipmentRecordState(recorded) {
+  if (!recorded || typeof recorded !== "object") return "none";
+  if (recorded.state === "pending") return "pending";
+  if (cleanShipmentText(recorded.trackingNumber)) return "created";
+  return "invalid";
+}
+
+export function buildPendingShipmentRecord(requestId, now = new Date()) {
+  return { state: "pending", requestId: String(requestId), startedAt: now.toISOString() };
+}
+
+export function buildCreatedShipmentRecord(result = {}, now = new Date()) {
+  return {
+    state: "created",
+    trackingNumber: result.trackingNumber,
+    dispatchConfirmationNumber: result.dispatchConfirmationNumber || "",
+    createdAt: now.toISOString(),
+  };
+}
+
+// Only failures where DHL definitely did NOT create a shipment may release the
+// pending record. Network errors, 5xx and unreadable success responses keep it.
+export function isDefinitiveShipmentFailure(status) {
+  const code = Number(status) || 0;
+  return code >= 400 && code < 500 && code !== 408;
+}
+
+// Repair only what is missing. A ticket that already shows the recorded
+// tracking number is left alone, so reopening the action on a shipped ticket
+// never resets Date Sent, Delivery Status or the workflow.
+export function buildShipmentRepairPlan(fields = {}, recorded = {}, config = {}) {
+  const trackingNumber = cleanShipmentText(recorded.trackingNumber, 100);
+  if (!trackingNumber) return { action: "invalid" };
+
+  const fieldTracking = cleanShipmentText(config.trackingField ? fields[config.trackingField] : "", 100);
+  if (fieldTracking && fieldTracking !== trackingNumber) return { action: "conflict", trackingNumber, fieldTracking };
+  if (fieldTracking === trackingNumber) return { action: "none", trackingNumber };
+
+  const update = {};
+  if (config.trackingField) update[config.trackingField] = trackingNumber;
+  if (config.dateSentField && !fields[config.dateSentField]) {
+    update[config.dateSentField] = String(recorded.createdAt || new Date().toISOString()).slice(0, 10);
+  }
+  if (config.deliveryStatusField && config.inTransitValue && !fields[config.deliveryStatusField]) {
+    update[config.deliveryStatusField] = { value: config.inTransitValue };
+  }
+  return { action: "repair", trackingNumber, fields: update, transition: true };
+}
+
 export function validateShipmentDraft(draft = {}, config = {}) {
   const errors = [];
   const requireText = (value, label) => {
@@ -36,7 +121,7 @@ export function validateShipmentDraft(draft = {}, config = {}) {
   if (!normalizePositiveNumber(draft.package?.widthCm)) errors.push("Package width must be greater than zero");
   if (!normalizePositiveNumber(draft.package?.heightCm)) errors.push("Package height must be greater than zero");
   requireText(config.dhlProductCode, "DHL product code");
-  if (draft.isCustomsDeclarable === true) {
+  if (requiresCustomsDeclaration(draft)) {
     errors.push("Customs-declarable shipments are not enabled yet; full customs line-item data is required before shipment creation");
   }
 
@@ -71,7 +156,7 @@ export function buildMyDhlShipmentPayload(draft = {}, config = {}, now = new Dat
     throw error;
   }
 
-  const planned = draft.plannedShippingDateAndTime || now.toISOString();
+  const planned = formatMyDhlDateTime(draft.plannedShippingDateAndTime, now);
   const accountNumber = cleanShipmentText(config.dhlShippingAccountNumber || config.dhlAccountNumber, 100);
   const productCode = cleanShipmentText(config.dhlProductCode, 20);
 

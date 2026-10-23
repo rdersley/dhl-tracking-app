@@ -3,9 +3,16 @@ import assert from "node:assert/strict";
 import {
   MAX_DHL_LABEL_BASE64_CHARS,
   buildMyDhlShipmentPayload,
+  buildCreatedShipmentRecord,
+  buildPendingShipmentRecord,
+  buildShipmentRepairPlan,
   buildShipmentWriteback,
   extractMyDhlShipmentResult,
+  formatMyDhlDateTime,
+  isDefinitiveShipmentFailure,
   normalizeCountryCode,
+  requiresCustomsDeclaration,
+  shipmentRecordState,
   validateShipmentDraft,
 } from "../src/shipment-core.mjs";
 
@@ -109,4 +116,72 @@ test("builds Jira writeback fields after DHL accepts shipment", () => {
   assert.equal(fields.customfield_10417, "JD0001");
   assert.deepEqual(fields.customfield_11952, { value: "In Transit" });
   assert.match(fields.customfield_10433, /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("customs is required from country codes even when the checkbox is unticked", () => {
+  const to = (countryCode) => ({ ...draft, receiver: { ...draft.receiver, countryCode }, isCustomsDeclarable: false });
+  assert.equal(requiresCustomsDeclaration(draft), false); // IE -> IE
+  assert.equal(requiresCustomsDeclaration(to("DE")), false); // EU -> EU
+  assert.equal(requiresCustomsDeclaration(to("GB")), true);
+  assert.equal(requiresCustomsDeclaration(to("US")), true);
+  assert.equal(requiresCustomsDeclaration(to("CH")), true);
+  assert.equal(requiresCustomsDeclaration({ ...draft, isCustomsDeclarable: true }), true);
+
+  const result = validateShipmentDraft(to("GB"), config);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((message) => message.includes("Customs-declarable shipments")));
+  assert.throws(() => buildMyDhlShipmentPayload(to("US"), config));
+});
+
+test("planned shipping time uses the MyDHL GMT offset format", () => {
+  const now = new Date("2026-09-05T12:00:00.123Z");
+  assert.equal(formatMyDhlDateTime(undefined, now), "2026-09-05T12:10:00GMT+00:00");
+  assert.equal(formatMyDhlDateTime("2026-09-06T08:30:00Z", now), "2026-09-06T08:30:00GMT+00:00");
+  assert.equal(formatMyDhlDateTime("2026-09-06T09:30:00GMT+01:00", now), "2026-09-06T09:30:00GMT+01:00");
+  assert.equal(formatMyDhlDateTime("not a date", now), "2026-09-05T12:10:00GMT+00:00");
+  const payload = buildMyDhlShipmentPayload(draft, config, now);
+  assert.match(payload.plannedShippingDateAndTime, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}GMT[+-]\d{2}:\d{2}$/);
+});
+
+test("shipment record states block duplicates while a request is pending", () => {
+  assert.equal(shipmentRecordState(null), "none");
+  assert.equal(shipmentRecordState(buildPendingShipmentRecord("req-1")), "pending");
+  assert.equal(shipmentRecordState(buildCreatedShipmentRecord({ trackingNumber: "JD1" })), "created");
+  assert.equal(shipmentRecordState({ trackingNumber: "JD1", createdAt: "2026-09-01T00:00:00Z" }), "created"); // pre-existing records
+  assert.equal(shipmentRecordState({ createdAt: "2026-09-01T00:00:00Z" }), "invalid");
+});
+
+test("only definite DHL rejections release a pending shipment request", () => {
+  for (const status of [400, 401, 403, 409, 422, 429]) assert.equal(isDefinitiveShipmentFailure(status), true, String(status));
+  for (const status of [0, 408, 500, 502, 503, 504]) assert.equal(isDefinitiveShipmentFailure(status), false, String(status));
+});
+
+test("repair does nothing when the ticket already shows the recorded tracking number", () => {
+  const fields = {
+    customfield_10417: "JD0001",
+    customfield_10433: "2026-09-01",
+    customfield_11952: { value: "Delivered" },
+  };
+  const plan = buildShipmentRepairPlan(fields, { trackingNumber: "JD0001", createdAt: "2026-09-01T10:00:00Z" }, config);
+  assert.deepEqual(plan, { action: "none", trackingNumber: "JD0001" });
+});
+
+test("repair fills only missing fields and keeps existing Date Sent and Delivery Status", () => {
+  const recorded = { trackingNumber: "JD0001", createdAt: "2026-09-01T10:00:00Z" };
+  const kept = buildShipmentRepairPlan({ customfield_10433: "2026-08-30", customfield_11952: { value: "Delivered" } }, recorded, config);
+  assert.equal(kept.action, "repair");
+  assert.deepEqual(kept.fields, { customfield_10417: "JD0001" });
+
+  const empty = buildShipmentRepairPlan({}, recorded, config);
+  assert.deepEqual(empty.fields, {
+    customfield_10417: "JD0001",
+    customfield_10433: "2026-09-01",
+    customfield_11952: { value: "In Transit" },
+  });
+});
+
+test("repair refuses to overwrite a different tracking number on the ticket", () => {
+  const plan = buildShipmentRepairPlan({ customfield_10417: "OTHER" }, { trackingNumber: "JD0001" }, config);
+  assert.equal(plan.action, "conflict");
+  assert.equal(buildShipmentRepairPlan({}, {}, config).action, "invalid");
 });

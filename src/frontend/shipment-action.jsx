@@ -13,6 +13,7 @@ import ForgeReconciler, {
   useProductContext,
 } from "@forge/react";
 import { invoke, view } from "@forge/bridge";
+import { requiresCustomsDeclaration } from "../shipment-core.mjs";
 
 const emptyParty = { name: "", company: "", address1: "", address2: "", city: "", county: "", postalCode: "", countryCode: "IE", phone: "", email: "" };
 
@@ -23,6 +24,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [confirmProduction, setConfirmProduction] = useState(false);
+  const [confirmCheckedMyDhl, setConfirmCheckedMyDhl] = useState(false);
   const [draft, setDraft] = useState({
     reference: "",
     shipper: { ...emptyParty },
@@ -65,6 +67,21 @@ function App() {
 
   useEffect(() => { check(); }, [issueKey]);
 
+  async function clearPending() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const response = await invoke("clearPendingDhlShipment", { issueKey, confirmCheckedMyDhl });
+      setConfirmCheckedMyDhl(false);
+      if (!response?.ok) setResult(response);
+      else await check();
+    } catch (error) {
+      setResult({ ok: false, error: String(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function createShipment() {
     setBusy(true);
     setResult(null);
@@ -73,6 +90,8 @@ function App() {
       setResult(response);
       if (response?.created && response?.trackingNumber) {
         setState((current) => ({ ...(current || {}), existingTracking: response.trackingNumber, shipmentRecorded: true }));
+      } else if (response?.pending) {
+        setState((current) => ({ ...(current || {}), shipmentPending: true, pendingSince: response.pendingSince || current?.pendingSince || null }));
       }
     } catch (error) {
       setResult({ ok: false, error: String(error) });
@@ -95,8 +114,10 @@ function App() {
   }
 
   const existing = state?.existingTracking;
+  const pending = state?.shipmentPending === true;
+  const customsRequired = requiresCustomsDeclaration(draft);
   const isProduction = state?.shippingEnvironment === "production";
-  const ready = state?.shippingEnabled && state?.credentialsConfigured && state?.accountConfigured && state?.productConfigured && !existing && (!isProduction || confirmProduction);
+  const ready = state?.shippingEnabled && state?.credentialsConfigured && state?.accountConfigured && state?.productConfigured && !existing && !pending && !customsRequired && (!isProduction || confirmProduction);
 
   return (
     <Stack space="space.200">
@@ -110,6 +131,15 @@ function App() {
         </SectionMessage>
       )}
 
+      {pending && (
+        <SectionMessage appearance="warning" title="Shipment request pending or unknown">
+          <Text>A DHL shipment request for this ticket{state?.pendingSince ? ` (started ${state.pendingSince})` : ""} is still in progress or did not finish cleanly, so DHL may already have the shipment. Check MyDHL before doing anything else.</Text>
+          <Text>If MyDHL shows the shipment, enter its tracking number on this ticket instead of creating another.</Text>
+          <Checkbox label="I have checked MyDHL and there is no shipment for this ticket" isChecked={confirmCheckedMyDhl} onChange={(e) => setConfirmCheckedMyDhl(e.target.checked)} />
+          <Button onClick={clearPending} isDisabled={busy || !confirmCheckedMyDhl}>Clear pending request</Button>
+        </SectionMessage>
+      )}
+
       {!state?.shippingEnabled && <SectionMessage appearance="information" title="Shipment creation disabled"><Text>Enable DHL shipment creation in Delivery Manager settings after test credentials are configured.</Text></SectionMessage>}
       {!state?.credentialsConfigured && <SectionMessage appearance="warning" title="DHL credentials missing"><Text>Configure DHL Express shipping credentials in Delivery Manager settings.</Text></SectionMessage>}
       {!state?.accountConfigured && <SectionMessage appearance="warning" title="DHL account missing"><Text>Configure the DHL shipping account number.</Text></SectionMessage>}
@@ -120,7 +150,7 @@ function App() {
         </SectionMessage>
       )}
 
-      {!existing && (
+      {!existing && !pending && (
         <Stack space="space.150">
           <Heading as="h4">Shipment</Heading>
           <Label labelFor="reference">Reference</Label><Textfield id="reference" value={draft.reference} onChange={(e) => setDraft((c) => ({ ...c, reference: e.target.value }))} />
@@ -156,7 +186,12 @@ function App() {
           <Label labelFor="height">Height (cm)</Label><Textfield id="height" value={draft.package.heightCm} onChange={(e) => patchPackage("heightCm", e.target.value)} />
           <Label labelFor="description">Description</Label><Textfield id="description" value={draft.package.description} onChange={(e) => patchPackage("description", e.target.value)} />
           <Checkbox label="Request DHL pickup" isChecked={draft.pickupRequested} onChange={(e) => setDraft((c) => ({ ...c, pickupRequested: e.target.checked }))} />
-          <Checkbox label="Customs declaration required" isChecked={draft.isCustomsDeclarable} onChange={(e) => setDraft((c) => ({ ...c, isCustomsDeclarable: e.target.checked }))} />
+          <Checkbox label="Customs declaration required" isChecked={customsRequired} onChange={(e) => setDraft((c) => ({ ...c, isCustomsDeclarable: e.target.checked }))} />
+          {customsRequired && (
+            <SectionMessage appearance="warning" title="Customs declaration required">
+              <Text>This shipment leaves the EU customs union (or customs was ticked), so it needs a customs declaration. Delivery Manager cannot create customs shipments yet; book this one in MyDHL directly.</Text>
+            </SectionMessage>
+          )}
           {isProduction && <Checkbox label="I confirm these details are correct and I want to create a LIVE DHL shipment" isChecked={confirmProduction} onChange={(e) => setConfirmProduction(e.target.checked)} />}
         </Stack>
       )}
@@ -173,7 +208,7 @@ function App() {
       )}
 
       <ButtonGroup>
-        {!existing && <Button appearance="primary" onClick={createShipment} isDisabled={busy || !ready}>{busy ? "Creating…" : isProduction ? "Create LIVE DHL Shipment" : "Create DHL Test Shipment"}</Button>}
+        {!existing && !pending && <Button appearance="primary" onClick={createShipment} isDisabled={busy || !ready}>{busy ? "Creating…" : isProduction ? "Create LIVE DHL Shipment" : "Create DHL Test Shipment"}</Button>}
         <Button onClick={() => view.close()} appearance="subtle">Close</Button>
       </ButtonGroup>
     </Stack>
